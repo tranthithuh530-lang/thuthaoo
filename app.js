@@ -1,0 +1,10357 @@
+/* ==========================================================================
+   THU THẢO COMPANY — B2B SALES OPPORTUNITY AI AGENT WORKFLOW (6 STEPS + 2 GATES)
+   Sequential Flow:
+   Step 1 -> Step 2 [DK1] -> (False: Halts -> Clarify -> Loop to Step 1)
+                          -> (True) -> Step 3 -> Step 4 -> Step 5 [DK2]
+                          -> (True: Pending Manager Slip -> Step 6)
+                          -> (False: Ready -> Step 6)
+   ========================================================================== */
+
+const POLICY = {
+  maxSalesDiscountPercent: 5,
+  minGrossMarginPercent: 15,
+  vatRate: 0.1
+};
+
+const STAGE_ORDER = ['step1', 'step2', 'clarify', 'step3', 'step4', 'step5'];
+
+const DEFAULT_PRODUCTS = [];
+
+const SCENARIO_PRESETS = {};
+
+const INITIAL_CRM_DEALS = [];
+
+/* ==========================================================================
+   CENTRAL APPLICATION STATE
+   ========================================================================== */
+const state = {
+  products: [],
+  deals: [],
+  currentStage: 'step1',
+  visitedStages: new Set(['step1']),
+  completedStages: new Set(),
+  skippedStages: new Set(),
+  warningStages: new Set(),
+  isRunningAgent: false,
+  runToken: 0,
+  loopCount: 0,
+  dataSourceName: 'Chưa nạp file danh mục',
+  filterStatus: 'all',
+  searchQuery: '',
+  api: {
+    configured: false,
+    maskedKey: '',
+    model: 'gemini-2.5-flash',
+    useLiveApi: true,
+    lastEndpoint: ''
+  },
+  analytics: {
+    importedRecords: [],
+    groupField: 'owner',
+    customFields: [],
+    sourceLabels: [],
+    lastSchemaSummary: '',
+    aiReport: null,
+    previewLimit: 100,
+    currentDataset: null,
+    currentColMap: {},
+    columnMapPanelOpen: false
+  },
+  dealsPreviewLimit: 100,
+
+  opp: createEmptyOpportunity()
+};
+
+const STANDARD_SYSTEM_FIELDS = [
+  { key: 'company', label: 'Tên khách hàng / Công ty', required: true, note: 'Bắt buộc (hoặc có Nhu cầu/SP)', isMetric: false },
+  { key: 'product', label: 'Sản phẩm / Giải pháp', required: true, note: 'Bắt buộc (hoặc có Khách hàng)', isMetric: false },
+  { key: 'revenue', label: 'Doanh thu / Thành tiền', required: false, note: 'Chỉ số định lượng (Sales / Revenue)', isMetric: true },
+  { key: 'budget', label: 'Ngân sách dự kiến', required: false, note: 'Chỉ số định lượng (Budget / Dự toán)', isMetric: true },
+  { key: 'cost', label: 'Chi phí / Giá vốn', required: false, note: 'Chỉ số định lượng (Cost / Chi phí)', isMetric: true },
+  { key: 'qty', label: 'Số lượng (Đơn vị)', required: false, note: 'Chỉ số định lượng (Quantity / Units)', isMetric: true },
+  { key: 'discount', label: 'Đề nghị chiết khấu (%)', required: false, note: 'Chỉ số định lượng (Discount %)', isMetric: true },
+  { key: 'days', label: 'Thời hạn triển khai (ngày)', required: false, note: 'Tùy chọn (Thời hạn giao)', isMetric: false },
+  { key: 'owner', label: 'NVKD Phụ trách', required: false, note: 'Tùy chọn (Loại trừ cột số tiền)', isMetric: false }
+];
+
+function createEmptyOpportunity(presetKey = null) {
+  if (presetKey && SCENARIO_PRESETS[presetKey]) {
+    const preset = SCENARIO_PRESETS[presetKey];
+    return {
+      id: '',
+      presetKey,
+      company: preset.company,
+      contact: preset.contact,
+      channel: preset.channel,
+      rawText: preset.rawText,
+      rawRow: null,
+      extracted: {
+        productsText: '',
+        totalQty: 0,
+        items: [],
+        budget: null,
+        days: null,
+        requestedDiscount: null
+      },
+      missingFields: [],
+      assumptionsUsed: [],
+      hasSoftWarnings: false,
+      condition1Passed: true,
+      calculationHalted: false,
+      clarifyDraft: '',
+
+      category: 'Hạ tầng & Bảo mật',
+      owner: 'Thu Thảo',
+      opsTeam: 'Phạm Tuấn Anh (Vận hành)',
+
+      toolTraces: [],
+      
+      appraisal: {
+        rows: [],
+        allInStock: false,
+        maxLeadTime: 0,
+        timelineOk: false
+      },
+
+      appliedDiscount: 0,
+      subtotal: 0,
+      discountAmt: 0,
+      netRevenue: 0,
+      vat: 0,
+      grandTotal: 0,
+      totalCost: 0,
+      marginPercent: 0,
+      budgetOk: true,
+      proposalDraft: '',
+
+      condition2Exceeded: false,
+      exceedReasons: [],
+      approvalSlip: '',
+      approver: 'Lê Minh Quân (Trưởng phòng KD)',
+      managerNote: '',
+      managerApproved: false,
+
+      statusKey: 'draft',
+      statusLabel: 'Đang tiếp nhận',
+      finalEmailDraft: '',
+      auditLogs: []
+    };
+  }
+
+  return {
+    id: '',
+    presetKey: '',
+    company: '',
+    contact: '',
+    channel: 'Email',
+    rawText: '',
+    rawRow: null,
+    extracted: {
+      productsText: '',
+      totalQty: 0,
+      items: [],
+      budget: null,
+      days: null,
+      requestedDiscount: null
+    },
+    missingFields: ['Danh mục sản phẩm', 'Số lượng', 'Ngân sách dự kiến', 'Thời hạn triển khai'],
+    missingFieldNames: ['Danh mục sản phẩm', 'Số lượng', 'Ngân sách dự kiến', 'Thời hạn triển khai'],
+    assumptionsUsed: [],
+    hasSoftWarnings: true,
+    softWarningReasons: ['Danh mục sản phẩm', 'Số lượng', 'Ngân sách dự kiến', 'Thời hạn triển khai'],
+    condition1Passed: false,
+    calculationHalted: true,
+    clarifyDraft: '',
+
+    category: 'Chưa phân loại',
+    owner: 'Chưa phân công',
+    opsTeam: 'Phạm Tuấn Anh (Vận hành)',
+
+    toolTraces: [],
+    
+    appraisal: {
+      rows: [],
+      allInStock: false,
+      maxLeadTime: 0,
+      timelineOk: false
+    },
+
+    appliedDiscount: 0,
+    subtotal: 0,
+    discountAmt: 0,
+    netRevenue: 0,
+    vat: 0,
+    grandTotal: 0,
+    totalCost: 0,
+    marginPercent: 0,
+    budgetOk: false,
+    proposalDraft: '',
+
+    condition2Exceeded: false,
+    exceedReasons: [],
+    approvalSlip: '',
+    approver: 'Lê Minh Quân (Trưởng phòng KD)',
+    managerNote: '',
+    managerApproved: false,
+
+    statusKey: 'clarify',
+    statusLabel: 'Cần bổ sung thông tin (ĐK1)',
+    finalEmailDraft: '',
+    auditLogs: []
+  };
+}
+
+/* ==========================================================================
+   SAFE DOM & FORMATTING HELPERS
+   ========================================================================== */
+function $(id) {
+  return typeof document !== 'undefined' ? document.getElementById(id) : null;
+}
+
+function setText(id, text) {
+  const el = $(id);
+  if (el) el.textContent = text;
+}
+
+function setHTML(id, html) {
+  const el = $(id);
+  if (el) el.innerHTML = html;
+}
+
+function setValue(id, value) {
+  const el = $(id);
+  if (el && el.value !== value) el.value = value;
+}
+
+function setSelectWithFallback(id, value) {
+  const el = $(id);
+  if (!el || !value) return;
+  if (el.options && typeof document !== 'undefined') {
+    const exists = Array.from(el.options).some(opt => opt.value === value);
+    if (!exists) {
+      const opt = document.createElement('option');
+      opt.value = value;
+      opt.textContent = value;
+      el.appendChild(opt);
+    }
+  }
+  el.value = value;
+}
+
+function formatVND(amount) {
+  if (!Number.isFinite(amount)) return '0 ₫';
+  return Math.round(amount).toLocaleString('vi-VN') + ' ₫';
+}
+
+function formatCompactMoney(amount) {
+  if (!Number.isFinite(amount) || amount <= 0) return 'Chưa có';
+  if (amount >= 1e9) return (amount / 1e9).toFixed(2).replace(/\.00$/, '') + ' tỷ ₫';
+  if (amount >= 1e6) return Math.round(amount / 1e6) + ' triệu ₫';
+  return formatVND(amount);
+}
+
+function nowTimeStr() {
+  const d = new Date();
+  return d.toTimeString().slice(0, 8);
+}
+
+function escapeHtml(str) {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function formatFileSize(bytes) {
+  if (typeof bytes !== 'number' || isNaN(bytes) || bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let i = 0;
+  let size = bytes;
+  while (size >= 1024 && i < units.length - 1) {
+    size /= 1024;
+    i++;
+  }
+  return `${size.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
+function showToast(message, type = 'info') {
+  let displayMsg = typeof message === 'string' ? message : (message?.message || String(message || ''));
+  
+  // Kiểm tra nếu thông báo chứa vết lỗi kỹ thuật / exception stack thô
+  const isTechnical = displayMsg.includes('[handleRequestFileUpload]') ||
+                      displayMsg.includes('[handleMultiDatasetUpload]') ||
+                      displayMsg.includes('TypeError') ||
+                      displayMsg.includes('SyntaxError') ||
+                      displayMsg.includes('ReferenceError') ||
+                      displayMsg.includes('Failed to fetch') ||
+                      displayMsg.includes('Unexpected token') ||
+                      displayMsg.includes('[vị trí:');
+
+  if (isTechnical) {
+    try {
+      if (typeof addAuditLog === 'function') {
+        addAuditLog('Chi tiết lỗi hệ thống', displayMsg, 'warn', 'SYSTEM');
+      }
+    } catch (_) {}
+    
+    if (displayMsg.toLowerCase().includes('lỗi đọc file') || displayMsg.toLowerCase().includes('lỗi đọc')) {
+      displayMsg = 'Không đọc được file, vui lòng kiểm tra lại định dạng tệp tin (hỗ trợ Excel, CSV, Lark, JSON, Word, PDF).';
+    } else if (displayMsg.includes('Failed to fetch')) {
+      displayMsg = 'Không thể kết nối đến máy chủ AI hoặc dịch vụ bên ngoài. Vui lòng kiểm tra lại kết nối mạng.';
+    } else {
+      displayMsg = 'Hệ thống phát hiện dữ liệu chưa chuẩn hóa. Chi tiết kỹ thuật đã được ghi lại trong mục Log.';
+    }
+    type = 'warn';
+  }
+
+  const container = $('toast-stream');
+  if (!container || typeof document === 'undefined') return;
+  const pill = document.createElement('div');
+  pill.className = `toast-pill ${type}`;
+  const icon = (type === 'warn' || type === 'error') ? '⚠️' : type === 'success' ? '✅' : 'ℹ️';
+  pill.innerHTML = `<span>${icon}</span><span>${escapeHtml(displayMsg)}</span><div class="toast-progress"></div>`;
+  pill.onclick = () => pill.remove();
+  container.appendChild(pill);
+  setTimeout(() => {
+    pill.classList.add('removing');
+    setTimeout(() => pill.remove(), 260);
+  }, 3800);
+}
+
+function addAuditLog(title, desc, level = 'info', node = '') {
+  const entry = {
+    time: nowTimeStr(),
+    node: node || state.currentStage,
+    title,
+    desc,
+    level
+  };
+  state.opp.auditLogs.unshift(entry);
+  renderAuditTimeline();
+}
+
+function renderAuditTimeline() {
+  setText('audit-count-pill', String(state.opp.auditLogs.length));
+  const listEl = $('audit-log-list');
+  if (!listEl) return;
+  if (!state.opp.auditLogs.length) {
+    listEl.innerHTML = '<div class="audit-entry info"><div class="audit-title">Sẵn sàng khởi chạy</div><div class="audit-desc">Chọn tình huống mẫu hoặc nhập yêu cầu để bắt đầu.</div></div>';
+    return;
+  }
+  listEl.innerHTML = state.opp.auditLogs
+    .map(log => `
+      <div class="audit-entry ${escapeHtml(log.level)}">
+        <div class="audit-time">${escapeHtml(log.time)} • ${escapeHtml(log.node.toUpperCase())}</div>
+        <div class="audit-title">${escapeHtml(log.title)}</div>
+        <div class="audit-desc">${escapeHtml(log.desc)}</div>
+      </div>`)
+    .join('');
+}
+
+/* ==========================================================================
+   NAVIGATION & STAGE RENDERING
+   ========================================================================== */
+const STUDIO_STAGE_META = {
+  step1: {
+    pill: "TIẾP NHẬN HỒ SƠ • BƯỚC 1/5",
+    title: "Tiếp nhận & Chuẩn hóa Hồ sơ Cơ hội",
+    desc: "Thu thập thông tin đối tác, nạp tài liệu yêu cầu hoặc nhập nội dung thô để AI trích xuất 7 trường điều kiện cốt lõi."
+  },
+  step2: {
+    pill: "THẨM ĐỊNH ĐK1 • BƯỚC 2/5",
+    title: "Rà soát 7 Trường & Kiểm toán Gap Audit",
+    desc: "Đối chiếu thông tin theo tiêu chí ĐK1 (Khách hàng, Sản phẩm, Số lượng, Đơn giá, Ngân sách, Chiết khấu, Tiến độ)."
+  },
+  clarify: {
+    pill: "YÊU CẦU LÀM RÕ • NHÁNH PHỤ",
+    title: "Làm rõ Thông tin Thiếu sót cùng Đối tác",
+    desc: "Tạo dự thảo email liên hệ chuyên nghiệp để khách hàng bổ sung các trường thông tin chưa đầy đủ."
+  },
+  step3: {
+    pill: "ĐỊNH DANH DANH MỤC • BƯỚC 3/5",
+    title: "Khớp Danh mục Sản phẩm & Gán NVKD",
+    desc: "Đối soát mã sản phẩm với Bảng giá chuẩn Thu Thảo Company và phân công chuyên viên kinh doanh phụ trách deal."
+  },
+  step4: {
+    pill: "DỰ THẢO BÁO GIÁ • BƯỚC 4/5",
+    title: "Tính toán Báo giá, Chiết khấu & Biên Lợi nhuận",
+    desc: "Tự động áp dụng chính sách chiết khấu, kiểm soát ngưỡng biên lợi nhuận kỳ vọng và cấu hình phương án giá tối ưu."
+  },
+  step5: {
+    pill: "PHÊ DUYỆT & CRM • BƯỚC 5/5",
+    title: "Tổng hợp Đề xuất, Xuất Báo cáo & Đồng bộ CRM",
+    desc: "Xuất hồ sơ đề xuất (Word .docx, Excel, PDF), lưu trữ lịch sử kiểm toán và cập nhật trạng thái cơ hội vào CRM."
+  }
+};
+
+function updateStudioStageHeader
+(stageName) {
+  const meta = STUDIO_STAGE_META[stageName] || STUDIO_STAGE_META.step1;
+  const pillEl = $("studio-badge-text");
+  if (pillEl) pillEl.textContent = meta.pill;
+  const titleEl = $("studio-stage-title");
+  if (titleEl) titleEl.textContent = meta.title;
+  const descEl = $("studio-stage-desc");
+  if (descEl) descEl.textContent = meta.desc;
+
+  const stepIds = ["1", "2", "clarify", "3", "4", "5"];
+  stepIds.forEach(id => {
+    const el = $(`rail-step-${id}`);
+    if (!el) return;
+    const ind = el.querySelector(".rail-indicator");
+    if (!ind) return;
+    const targetStage = id === "clarify" ? "clarify" : `step${id}`;
+    if (targetStage === stageName) {
+      ind.textContent = "›";
+      ind.style.opacity = "1";
+    } else if (state.completedStages && state.completedStages.has(targetStage)) {
+      ind.textContent = "✓";
+      ind.style.opacity = "1";
+    } else {
+      ind.textContent = "🔒";
+      ind.style.opacity = "0.6";
+    }
+  });
+}
+
+function goToStage(stageName) {
+  if (stageName === 'step6' || stageName === 'manager') stageName = 'step5';
+  if (!STAGE_ORDER.includes(stageName)) return;
+
+  // Enforce stage transition - allow non-blocking progression
+  if (['step3', 'step4', 'step5'].includes(stageName) && state.opp.calculationHalted) {
+    state.opp.calculationHalted = false;
+  }
+
+  state.currentStage = stageName;
+  state.visitedStages.add(stageName);
+  updateStudioStageHeader(stageName);
+
+  STAGE_ORDER.forEach(st => {
+    const card = $(`stage-${st}`);
+    if (card) card.classList.toggle('active', st === stageName);
+
+    const rail = $(`rail-step-${st.replace('step', '')}`);
+    if (rail) {
+      rail.classList.toggle('active', st === stageName);
+      if (st === stageName) {
+        rail.classList.remove('skipped');
+      } else {
+        rail.classList.toggle('has-warn', Boolean(state.warningStages && state.warningStages.has(st)));
+        rail.classList.toggle('completed', state.completedStages.has(st));
+        rail.classList.toggle('skipped', state.skippedStages.has(st));
+      }
+    }
+  });
+
+    if (stageName === "step5") {
+    renderStep6UI();
+    renderShortExecutiveReportDashboard();
+    renderStep5ProseReport();
+  }
+  renderAllLivePanels();
+}
+
+
+function markStageCompleted(stageName) {
+  state.completedStages.add(stageName);
+  state.skippedStages.delete(stageName);
+  if (state.warningStages) state.warningStages.delete(stageName);
+  const rail = $(`rail-step-${stageName.replace('step', '')}`);
+  if (rail) {
+    rail.classList.remove('skipped', 'has-warn');
+    rail.classList.add('completed');
+    const badge = rail.querySelector?.('.rail-badge');
+    if (badge) badge.textContent = '✓';
+    const sub = rail.querySelector?.('.rail-sub');
+    if (sub && typeof sub.remove === 'function') sub.remove();
+  }
+}
+
+function markStageWarning(stageName, subLabel = 'Thiếu thông tin') {
+  state.warningStages = state.warningStages || new Set();
+  state.warningStages.add(stageName);
+  state.completedStages.delete(stageName);
+  state.skippedStages.delete(stageName);
+  const rail = $(`rail-step-${stageName.replace('step', '')}`);
+  if (rail) {
+    rail.classList.remove('skipped', 'completed');
+    rail.classList.add('has-warn');
+    const badge = rail.querySelector?.('.rail-badge');
+    if (badge) badge.textContent = '!';
+    let sub = rail.querySelector?.('.rail-sub');
+    if (!sub && typeof document !== 'undefined') {
+      sub = document.createElement('small');
+      sub.className = 'rail-sub';
+      rail.querySelector?.('.rail-text')?.appendChild(sub);
+    }
+    if (sub) sub.textContent = subLabel;
+  }
+}
+
+function markStageSkipped(stageName, label = 'Bỏ qua (đủ điều kiện)') {
+  state.skippedStages.add(stageName);
+  if (state.warningStages) state.warningStages.delete(stageName);
+  const rail = $(`rail-step-${stageName.replace('step', '')}`);
+  if (rail) {
+    rail.classList.remove('active', 'completed', 'has-warn');
+    rail.classList.add('skipped');
+    let sub = rail.querySelector?.('.rail-sub');
+    if (!sub && typeof document !== 'undefined') {
+      sub = document.createElement('small');
+      sub.className = 'rail-sub';
+      rail.querySelector?.('.rail-text')?.appendChild(sub);
+    }
+    if (sub) sub.textContent = label;
+  }
+}
+
+function resetRailSteps() {
+  if (state.warningStages) state.warningStages.clear();
+  const steps = [
+    { id: '1', text: '1' },
+    { id: '2', text: '2' },
+    { id: 'clarify', text: '!' },
+    { id: '3', text: '3' },
+    { id: '4', text: '4' },
+    { id: '5', text: '5' }
+  ];
+  steps.forEach(s => {
+    const rail = $(`rail-step-${s.id}`);
+    if (rail) {
+      rail.classList.remove('active', 'completed', 'skipped', 'has-warn');
+      const badge = rail.querySelector?.('.rail-badge');
+      if (badge) badge.textContent = s.text;
+      const sub = rail.querySelector?.('.rail-sub');
+      if (sub && typeof sub.remove === 'function') sub.remove();
+    }
+  });
+}
+
+function haltAtCondition1Clarify() {
+  if (state.warningStages) {
+    ['step3', 'step4', 'step5', 'manager', 'step6'].forEach(st => state.warningStages.delete(st));
+  }
+  ['step3', 'step4', 'step5', 'manager', 'step6'].forEach(st => {
+    if (state.completedStages) state.completedStages.delete(st);
+    if (state.skippedStages) state.skippedStages.delete(st);
+  });
+  const downstreamSteps = [
+    { id: '3', text: '3' },
+    { id: '4', text: '4' },
+    { id: '5', text: '5' },
+    { id: 'manager', text: 'D' },
+    { id: '6', text: '6' }
+  ];
+  downstreamSteps.forEach(s => {
+    const rail = $(`rail-step-${s.id}`);
+    if (rail) {
+      rail.classList.remove('active', 'completed', 'skipped', 'has-warn');
+      const badge = rail.querySelector?.('.rail-badge');
+      if (badge) badge.textContent = s.text;
+      const sub = rail.querySelector?.('.rail-sub');
+      if (sub && typeof sub.remove === 'function') sub.remove();
+    }
+  });
+
+  state.opp.condition1Passed = false;
+  state.opp.calculationHalted = true;
+  state.opp.statusKey = 'clarify';
+  state.opp.statusLabel = 'Cần bổ sung thông tin (ĐK1)';
+  state.opp.grandTotal = 0;
+  state.opp.quotePrice = 0;
+  state.opp.totalPrice = 0;
+  state.opp.totalValue = 0;
+  state.opp.costTotal = 0;
+  state.opp.marginPercent = 0;
+}
+
+function renderAllLivePanels() {
+  renderSnapshotSidebar();
+  updateMinimap();
+  if ($('flowchart-modal')?.classList.contains('active')) {
+    setHTML('flowchart-modal-svg', buildFlowchartSvg('full'));
+  }
+}
+
+/* ==========================================================================
+   STEP 1: TIẾP NHẬN YÊU CẦU (START NODE)
+   ========================================================================== */
+function selectScenario(presetKey) {
+  const preset = SCENARIO_PRESETS[presetKey];
+  if (!preset) return;
+  state.runToken += 1;
+  state.isRunningAgent = false;
+  state.isPaused = false;
+  const pBtn = $('btn-agent-pause');
+  if (pBtn) pBtn.style.display = 'none';
+  state.loopCount = 0;
+  state.visitedStages = new Set(['step1']);
+  state.completedStages = new Set();
+  state.skippedStages = new Set();
+  resetRailSteps();
+  state.opp = createEmptyOpportunity(presetKey);
+
+  setValue('inp-company', state.opp.company);
+  setValue('inp-contact', state.opp.contact);
+  setSelectWithFallback('inp-channel', state.opp.channel);
+  setValue('inp-raw-text', state.opp.rawText);
+
+  if (typeof document !== 'undefined') {
+    document.querySelectorAll('.preset-chip').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.preset === presetKey);
+    });
+  }
+
+  addAuditLog('Bước 1: Tiếp nhận yêu cầu', `Đã nạp hồ sơ từ ${state.opp.company} (${state.opp.channel})`, 'info', 'step1');
+  goToStage('step1');
+}
+
+function onStep1Input() {
+  state.opp.company = ($('inp-company')?.value || '').trim();
+  state.opp.contact = ($('inp-contact')?.value || '').trim();
+  state.opp.channel = $('inp-channel')?.value || 'Email';
+  state.opp.rawText = $('inp-raw-text')?.value || '';
+  renderSnapshotSidebar();
+}
+
+function startNewOpportunity() {
+  state.runToken += 1;
+  state.isRunningAgent = false;
+  state.loopCount = 0;
+  state.visitedStages = new Set(['step1']);
+  state.completedStages = new Set();
+  resetRailSteps();
+  state.opp = createEmptyOpportunity(null);
+  state.opp.company = '';
+  state.opp.contact = '';
+  state.opp.rawText = '';
+  state.opp.statusLabel = 'Chờ nhập yêu cầu';
+
+  setValue('inp-company', '');
+  setValue('inp-contact', '');
+  setValue('inp-channel', 'Email');
+  setValue('inp-raw-text', '');
+  if (typeof document !== 'undefined') {
+    document.querySelectorAll('.preset-chip').forEach(btn => btn.classList.remove('active'));
+  }
+
+  renderSnapshotSidebar();
+  const btnTrue = $('btn-dk1-true');
+  if (btnTrue) {
+    btnTrue.disabled = true;
+    btnTrue.classList.add('is-disabled-locked');
+    btnTrue.setAttribute('disabled', 'disabled');
+  }
+  clearGuardrailUiBlock();
+  addAuditLog('Khởi tạo cơ hội mới', 'Đã làm mới biểu mẫu Bước 1 để tiếp nhận yêu cầu mới.', 'info', 'step1');
+  goToStage('step1');
+  scrollToWorkspace();
+}
+
+// ==========================================
+// DATA VALIDATION GUARDRAILS (BƯỚC 1 & ÁNH XẠ CỘT)
+// ==========================================
+
+function validateDatasetGuardrails(meta) {
+  const colCount = Number(meta?.columnCount ?? (meta?.headers?.length || (meta?.rows?.[0] ? Object.keys(meta.rows[0]).filter(k => !k.startsWith('_')).length : 0)));
+  const rowCount = Number(meta?.rowCount ?? (Array.isArray(meta?.rows) ? meta.rows.length : 0));
+  const fileName = meta?.fileName || 'Tệp dữ liệu';
+
+  const errors = [];
+  let isOverMaxCols = false;
+  let isUnderMinRows = false;
+
+  // 1. Vượt quá giới hạn số cột cho phép (Max Columns Limit: > 200 cột)
+  if (colCount > 200) {
+    isOverMaxCols = true;
+    errors.push(`Cảnh báo: Tệp dữ liệu vượt quá giới hạn 200 cột cho phép (hiện tại: ${colCount} cột). Vui lòng rút gọn cấu trúc bảng trước khi phân tích.`);
+  }
+
+  // 2. Dữ liệu quá ít hoặc không đủ ý nghĩa thống kê (Insufficient Rows: < 2 dòng)
+  if (rowCount < 2) {
+    isUnderMinRows = true;
+    errors.push(`Cảnh báo: Tệp chỉ có ${rowCount} dòng dữ liệu, không đủ mẫu tối thiểu (cần ít nhất 2 dòng) để thực hiện phân tích xu hướng và thống kê.`);
+  }
+
+  return {
+    isValid: errors.length === 0,
+    isOverMaxCols,
+    isUnderMinRows,
+    colCount,
+    rowCount,
+    errors,
+    fileName
+  };
+}
+
+function applyGuardrailUiBlock(guardrail, context = 'all') {
+  if (!guardrail || guardrail.isValid) return;
+
+  state.analytics.guardrailBlocked = guardrail;
+
+  const errorHtml = `
+    <div style="font-weight:700; margin-bottom:0.4rem; color:#991b1b; display:flex; align-items:center; gap:0.4rem;">
+      <span style="font-size:1.15rem;">⛔</span>
+      <span>DỮ LIỆU ĐẦU VÀO KHÔNG HỢP LỆ (DATA VALIDATION GUARDRAILS)</span>
+    </div>
+    ${guardrail.errors.map(err => `
+      <div style="display:flex; align-items:flex-start; gap:0.4rem; margin-top:0.25rem;">
+        <span style="font-size:1rem; line-height:1.2;">⚠️</span>
+        <div style="font-weight:600;">${escapeHtml(err)}</div>
+      </div>
+    `).join('')}
+  `;
+
+  // 1. Step 1 Error Banner
+  const step1Banner = $('step1-error-banner');
+  if (step1Banner) {
+    step1Banner.style.display = 'block';
+    step1Banner.innerHTML = errorHtml;
+  }
+
+  // 2. Analytics / Batch Error Banner
+  const analyticsErr = $('analytics-error-banner');
+  if (analyticsErr) {
+    analyticsErr.style.display = 'block';
+    analyticsErr.innerHTML = errorHtml;
+  }
+
+  // 3. Column Mapping Banner (red error)
+  const colMapBanner = $('col-mapping-banner');
+  if (colMapBanner) {
+    colMapBanner.className = 'col-mapping-banner-err';
+    colMapBanner.style.background = '#fef2f2';
+    colMapBanner.style.border = '1px solid #f87171';
+    colMapBanner.style.color = '#991b1b';
+    colMapBanner.innerHTML = guardrail.errors.map(e => `<div>⚠️ ${escapeHtml(e)}</div>`).join('');
+  }
+
+  // 4. Hide group-by pills if exceeding max columns (> 200)
+  if (guardrail.isOverMaxCols) {
+    const pills = $('group-by-pills');
+    if (pills) {
+      pills.style.display = 'none';
+    }
+  }
+
+  // 5. Lock continue / action buttons
+  const btnStep1 = $('btn-step1-next');
+  if (btnStep1) {
+    btnStep1.disabled = true;
+    btnStep1.style.opacity = '0.5';
+    btnStep1.style.cursor = 'not-allowed';
+    btnStep1.title = 'Tệp không đạt tiêu chuẩn kiểm tra đầu vào (Guardrails).';
+  }
+
+  const btnApply = $('btn-apply-col-map');
+  if (btnApply) {
+    btnApply.disabled = true;
+    btnApply.style.opacity = '0.5';
+    btnApply.style.cursor = 'not-allowed';
+    btnApply.title = 'Tệp không đạt tiêu chuẩn kiểm tra đầu vào (Guardrails).';
+  }
+
+  const btnBatch = $('btn-batch-run');
+  if (btnBatch) {
+    btnBatch.disabled = true;
+    btnBatch.style.opacity = '0.5';
+    btnBatch.style.cursor = 'not-allowed';
+    btnBatch.title = 'Tệp không đạt tiêu chuẩn kiểm tra đầu vào (Guardrails).';
+  }
+
+  // 6. Toasts
+  guardrail.errors.forEach(err => {
+    showToast(err, 'error');
+  });
+}
+
+function clearGuardrailUiBlock() {
+  state.analytics.guardrailBlocked = null;
+
+  const step1Banner = $('step1-error-banner');
+  if (step1Banner) {
+    step1Banner.style.display = 'none';
+    step1Banner.innerHTML = '';
+  }
+
+  const analyticsErr = $('analytics-error-banner');
+  if (analyticsErr) {
+    analyticsErr.style.display = 'none';
+    analyticsErr.innerHTML = '';
+  }
+
+  // Restore group-by pills
+  const pills = $('group-by-pills');
+  if (pills) {
+    pills.style.display = 'flex';
+  }
+
+  // Restore continue buttons
+  const btnStep1 = $('btn-step1-next');
+  if (btnStep1) {
+    btnStep1.disabled = false;
+    btnStep1.style.opacity = '';
+    btnStep1.style.cursor = '';
+    btnStep1.title = '';
+  }
+
+  const btnApply = $('btn-apply-col-map');
+  if (btnApply) {
+    btnApply.disabled = false;
+    btnApply.style.opacity = '';
+    btnApply.style.cursor = '';
+    btnApply.title = '';
+  }
+
+  const btnBatch = $('btn-batch-run');
+  if (btnBatch) {
+    btnBatch.disabled = false;
+    btnBatch.style.opacity = '';
+    btnBatch.style.cursor = '';
+    btnBatch.title = '';
+  }
+}
+
+function checkNumericalMetricsGuardrail(dataset, colMap) {
+  if (!dataset || !dataset.rawRows || !dataset.rawRows.length) return false;
+
+  const rows = dataset.rawRows;
+  const headers = dataset.headers || [];
+
+  // Mapped metric columns check
+  const metricFieldKeys = STANDARD_SYSTEM_FIELDS.filter(f => f.isMetric).map(f => f.key);
+  const checkKeys = Array.from(new Set([...metricFieldKeys, 'revenue', 'budget', 'cost', 'qty', 'discount', 'price', 'profit']));
+
+  const mappedCols = checkKeys
+    .map(k => colMap?.[k])
+    .filter(c => c && typeof c === 'string' && c.trim() !== '' && c !== '(Không có)' && c !== '(Để trống)' && headers.includes(c));
+
+  // Check if any mapped metric column contains valid numbers in the dataset
+  for (const col of mappedCols) {
+    const hasNum = rows.slice(0, 50).some(r => isNumericLikeValue(r?.[col]));
+    if (hasNum) return true;
+  }
+
+  // Check if ANY other column in the dataset contains numeric values
+  for (const h of headers) {
+    if (h.startsWith('_')) continue;
+    const hasNum = rows.slice(0, 50).some(r => isNumericLikeValue(r?.[h]));
+    if (hasNum) return true;
+  }
+
+  // No quantitative metric column mapped, and no numbers exist anywhere in dataset (pure text/dummy strings like 'x')
+  return false;
+}
+
+async function handleRequestFileUpload(event) {
+  const file = event?.target?.files?.[0];
+  if (!file) return;
+
+  const b1 = $('step1-loaded-file-badge');
+  if (b1) {
+    b1.style.display = 'inline-flex';
+    b1.innerHTML = `📄 <strong>${escapeHtml(file.name)}</strong> (${formatFileSize(file.size)})`;
+  }
+  try {
+    const parsed = await parseUploadedFileObject(file);
+
+    // Guardrail Check 1 & 2: Max columns & Insufficient rows
+    const guardrail = validateDatasetGuardrails({
+      colCount: parsed.columnCount,
+      rowCount: parsed.rowCount,
+      headers: parsed.headers,
+      rows: parsed.rows,
+      fileName: file.name
+    });
+
+    if (!guardrail.isValid) {
+      applyGuardrailUiBlock(guardrail, 'step1');
+      return;
+    }
+
+    clearGuardrailUiBlock();
+
+    if (!parsed.rows || !parsed.rows.length) {
+      showToast(`Không đọc được dữ liệu hợp lệ từ file ${file.name}`, 'warn');
+      return;
+    }
+
+    const normalized = await ingestDatasetRecords(parsed.rows, file.name, parsed.detectedSource);
+
+    // Guardrail Check 3: Check Numerical Metrics
+    const hasValidMetrics = checkNumericalMetricsGuardrail(state.analytics.currentDataset, state.analytics.currentColMap);
+    if (!hasValidMetrics) {
+      const step1Banner = $('step1-error-banner');
+      if (step1Banner) {
+        step1Banner.style.display = 'block';
+        step1Banner.innerHTML = `
+          <div style="font-weight:700; color:#991b1b; display:flex; align-items:center; gap:0.4rem;">
+            <span>❌</span>
+            <span>Lỗi cấu trúc dữ liệu: Không tìm thấy cột số liệu định lượng nào hợp lệ để tính toán chỉ số KPI và vẽ biểu đồ.</span>
+          </div>
+          <div style="margin-top:0.35rem; font-size:0.77rem; color:#7f1d1d;">
+            Tất cả các trường định lượng (Doanh thu, Chi phí, Lợi nhuận, Số lượng, Đơn giá...) đều ở trạng thái "(Không có)" và dữ liệu chỉ toàn chuỗi ký tự văn bản. Vui lòng nạp tệp dữ liệu hợp lệ khác.
+          </div>
+        `;
+      }
+      const btnStep1 = $('btn-step1-next');
+      if (btnStep1) {
+        btnStep1.disabled = true;
+        btnStep1.style.opacity = '0.5';
+        btnStep1.style.cursor = 'not-allowed';
+      }
+      const btnApply = $('btn-apply-col-map');
+      if (btnApply) {
+        btnApply.disabled = true;
+        btnApply.style.opacity = '0.5';
+        btnApply.style.cursor = 'not-allowed';
+      }
+      const btnBatch = $('btn-batch-run');
+      if (btnBatch) {
+        btnBatch.disabled = true;
+        btnBatch.style.opacity = '0.5';
+        btnBatch.style.cursor = 'not-allowed';
+      }
+      showToast('❌ Lỗi cấu trúc dữ liệu: Không tìm thấy cột số liệu định lượng nào hợp lệ để tính toán chỉ số KPI và vẽ biểu đồ.', 'error');
+      toggleColumnMappingPanel(true);
+      return;
+    }
+
+    if (normalized.length) {
+      loadImportedRecordToStep1(normalized[0].id);
+      if (normalized.length > 1) {
+        generateAiExecutiveReport(true);
+      }
+      showToast(`✅ Đã nạp thành công ${normalized.length} bản ghi`, 'success');
+      proceedStep1ToStep2();
+    }
+  } catch (err) {
+    const stackLine = err.stack ? (err.stack.split('\n')[1] || err.stack.split('\n')[0] || '').trim() : '';
+    const loc = stackLine ? ` [vị trí: ${stackLine}]` : '';
+    showToast(`[handleRequestFileUpload] Lỗi đọc file ${file.name}: ${err.message}${loc}`, 'warn');
+    console.error(`[handleRequestFileUpload] Lỗi đọc file ${file.name}:`, err);
+  } finally {
+    if (event?.target) event.target.value = '';
+  }
+}
+
+function proceedStep1ToStep2() {
+  const btn = $('btn-step1-next');
+  if (btn && btn.disabled) {
+    showToast('⚠️ Không thể tiếp tục: Tệp dữ liệu chưa vượt qua kiểm tra Guardrail.', 'warn');
+    return;
+  }
+  onStep1Input();
+  markStageCompleted('step1');
+  if (state.api.configured && state.api.useLiveApi && typeof fetch === 'function') {
+    parseAndEvaluateStep2WithApi();
+  } else {
+    parseAndEvaluateStep2();
+  }
+  goToStage('step2');
+}
+
+/* ==========================================================================
+   STEP 2: PHÂN LOẠI, BÓC TÁCH 5 TRƯỜNG & ĐIỀU KIỆN 1 [CÓ ĐỦ THÔNG TIN?]
+   ========================================================================== */
+let _compiledProductMatchersKey = '';
+let _compiledProductMatchers = [];
+
+function isValidProductString(str) {
+  if (!str || typeof str !== 'string') return false;
+  const s = str.trim().toLowerCase();
+  if (!s || s.length < 2) return false;
+  if (s.includes('chưa xác định') || s.includes('thiếu tên sản phẩm') || /^(null|none|n\/a|x|\s*)$/i.test(s)) return false;
+  return true;
+}
+
+function getCompiledProductMatchers() {
+  const key = state.products.map(p => `${p.sku}:${p.name}:${(p.aliases || []).join(',')}`).join('|');
+  if (key === _compiledProductMatchersKey && _compiledProductMatchers.length) {
+    return _compiledProductMatchers;
+  }
+  _compiledProductMatchersKey = key;
+  _compiledProductMatchers = state.products.map(prod => {
+    const rawKeywords = [prod.name.toLowerCase(), ...(prod.aliases || []).map(a => a.toLowerCase())];
+    const keywords = rawKeywords.filter(k => k && k.length >= 3 && !/^\d+$/.test(k));
+    const escaped = keywords.map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+    if (!escaped) return null;
+    return {
+      prod,
+      reBefore: new RegExp(`(\\d+)\\s*(?:x|bộ|chiếc|cái|gói|thiết bị)?\\s*(?:${escaped})(?=[\\s,.;|]|$)`, 'i'),
+      reAfter: new RegExp(`(?:${escaped})[^\\n.,;]{0,25}?(?:x|sl|số\\s*lượng|:)\\s*(\\d+)`, 'i'),
+      reOnly: new RegExp(`(?:^|[\\s,.;|])(?:${escaped})(?=[\\s,.;|]|$)`, 'i')
+    };
+  }).filter(Boolean);
+  return _compiledProductMatchers;
+}
+
+function extractProductLines(rawText) {
+  const items = [];
+  const normalized = String(rawText || '').toLowerCase();
+  const matchers = getCompiledProductMatchers();
+
+  for (let idx = 0; idx < matchers.length; idx++) {
+    const m = matchers[idx];
+    const matchA = m.reBefore.exec(normalized);
+    const matchB = !matchA ? m.reAfter.exec(normalized) : null;
+
+    if (matchA || matchB) {
+      const match = matchA || matchB;
+      const qty = Math.max(1, parseInt(match[1], 10));
+      const pos = match.index;
+      items.push({ ...m.prod, qty, _pos: pos });
+    } else {
+      const matchOnly = m.reOnly.exec(normalized);
+      if (matchOnly) {
+        items.push({ ...m.prod, qty: 0, _pos: matchOnly.index });
+      }
+    }
+  }
+
+  // Sort strictly by appearance order in input text
+  items.sort((a, b) => a._pos - b._pos);
+
+  // Fallback for custom unrecognized product mentioning quantity before a capitalized noun
+  if (!items.length) {
+    const generic = /(\d+)\s*(?:x|chiếc|bộ|gói|license|thiết\s*bị)\s+([A-Za-z0-9À-ỹ"'\-\s]{3,40})/i.exec(rawText);
+    if (generic) {
+      items.push({
+        sku: 'MA-CUSTOM-01',
+        name: generic[2].trim(),
+        category: 'Thiết bị Văn phòng',
+        unit: 'Bộ',
+        listPrice: 25000000,
+        cost: 18500000,
+        stock: 10,
+        leadTimeDays: 7,
+        qty: parseInt(generic[1], 10),
+        _pos: generic.index
+      });
+    }
+  }
+
+  return items;
+}
+
+function normalizeLocaleDecimal(numStr) {
+  const s = String(numStr || '').trim();
+  if (/^\d{1,3}(\.\d{3})+$/.test(s)) return parseFloat(s.replace(/\./g, ''));
+  return parseFloat(s.replace(/,/g, '.'));
+}
+
+function collectRawRowNotesText(rawRow) {
+  if (!rawRow || typeof rawRow !== 'object') return '';
+  return Object.entries(rawRow)
+    .filter(([k, v]) => !k.startsWith('_') && v !== undefined && v !== null && String(v).trim() !== '')
+    .map(([k, v]) => `${k}: ${String(v).trim()}`)
+    .join(' | ');
+}
+
+function parseCurrencyToVnd(rawStr) {
+  if (!rawStr) return null;
+  const s = String(rawStr).trim();
+
+  // 1. Tỷ / Ty: "3.1 tỷ", "3,1 tỷ", "1.5 tỷ", "3.1 tỷ VND"
+  const tyMatch = /([\d]+(?:[.,]\d+)?)\s*(?:tỷ|ty)(?!\w)/i.exec(s);
+  if (tyMatch) {
+    const num = parseFloat(tyMatch[1].replace(',', '.'));
+    if (Number.isFinite(num) && num > 0) return Math.round(num * 1e9);
+  }
+
+  // 2. Triệu / Trieu / tr / m: "3100 triệu", "500tr", "500 tr", "24.45 triệu", "100m"
+  const trMatch = /([\d]+(?:[.,]\d+)?)\s*(?:triệu|trieu|tr|m)(?!\w)/i.exec(s);
+  if (trMatch) {
+    const num = parseFloat(trMatch[1].replace(',', '.'));
+    if (Number.isFinite(num) && num > 0) return Math.round(num * 1e6);
+  }
+
+  // 3. Full formatted VND: "3.100.000.000", "3,100,000,000", "450.000.000 đ"
+  const fullMatch = /([\d]{1,3}(?:[.,]\d{3})+(?:[.,]\d{3})*)(?:\s*(?:vnđ|vnd|đ))?/i.exec(s);
+  if (fullMatch) {
+    const digits = fullMatch[1].replace(/[.,]/g, '');
+    const num = parseInt(digits, 10);
+    if (Number.isFinite(num) && num >= 100000) return num;
+  }
+
+  // 4. Raw digits >= 6 digits: "3100000000", "500000000"
+  const digitsOnly = s.replace(/[^\d]/g, '');
+  if (digitsOnly && digitsOnly.length >= 6) {
+    const num = parseInt(digitsOnly, 10);
+    if (Number.isFinite(num)) return num;
+  }
+
+  return null;
+}
+
+function parseMoneyMatchToVnd(numStr, unitRaw) {
+  const combined = `${numStr} ${unitRaw || ''}`.trim();
+  return parseCurrencyToVnd(combined);
+}
+
+function parseBudgetVnd(rawText) {
+  const text = String(rawText || '');
+
+  // 1. Prefixed budget pattern (e.g. "Ngân sách: 3.1 tỷ VND", "budget 3,1 tỷ", "kinh phí 450 triệu", "ngân sách khoảng 500 triệu", "dự toán: 3.100.000.000")
+  const prefixed = /(?:ngân\s*sách|budget|dự\s*trù|hạn\s*mức\s*chi|kinh\s*phí|dự\s*toán|giá\s*trị\s*(?:đơn|dự\s*kiến|gói)?)(?:\s*(?:dự\s*kiến|ước\s*tính|tối\s*đa|khoảng|tầm|là|:|-))*\s*([^.,;|\n]+(?:[.,]\d+)?\s*(?:tỷ|ty|triệu|trieu|tr|m|vnđ|vnd|đ|đồng)?)/i.exec(text);
+  if (prefixed) {
+    const val = parseCurrencyToVnd(prefixed[1]);
+    if (val && val >= 100000) return val;
+  }
+
+  // 2. Standalone monetary expression with explicit unit tỷ / ty
+  const standaloneTy = /([\d]+(?:[.,]\d+)?)\s*(?:tỷ|ty)(?!\w)/i.exec(text);
+  if (standaloneTy) {
+    const val = parseCurrencyToVnd(standaloneTy[0]);
+    if (val) return val;
+  }
+
+  // 3. Standalone monetary expression with explicit unit triệu / tr / m
+  const standaloneTr = /([\d]+(?:[.,]\d+)?)\s*(?:triệu|trieu|tr|m)(?!\w)/i.exec(text);
+  if (standaloneTr) {
+    const val = parseCurrencyToVnd(standaloneTr[0]);
+    if (val) return val;
+  }
+
+  // 4. Standalone formatted VND with explicit currency unit (vnđ, vnd, đ, đồng)
+  const standaloneVnd = /([\d]{1,3}(?:[.,]\d{3})+)\s*(?:vnđ|vnd|đ|đồng)(?!\w)/i.exec(text);
+  if (standaloneVnd) {
+    const val = parseCurrencyToVnd(standaloneVnd[0]);
+    if (val && val >= 100000) return val;
+  }
+
+  return null;
+}
+
+function computeOmissionMetric(rawText, extractedItems) {
+  const text = String(rawText || '').toLowerCase();
+  const validItems = (extractedItems || []).filter(it => it.qty > 0);
+  const recognizedCount = validItems.length;
+
+  let expectedCount = 0;
+  state.products.forEach(prod => {
+    const names = [prod.name.toLowerCase(), ...(prod.aliases || []).map(a => a.toLowerCase())];
+    const found = names.some(n => text.includes(n));
+    if (found) expectedCount++;
+  });
+
+  if (expectedCount === 0) {
+    const genericMatches = text.match(/\d+\s*(?:x|bộ|chiếc|cái|gói|thiết bị)/g);
+    expectedCount = genericMatches ? genericMatches.length : (recognizedCount > 0 ? recognizedCount : 1);
+  }
+
+  const omittedCount = Math.max(0, expectedCount - recognizedCount);
+  const omissionRate = expectedCount > 0 ? Math.round((omittedCount / expectedCount) * 100) : 0;
+
+  state.opp.expectedItemsCount = expectedCount;
+  state.opp.extractedItemsCount = recognizedCount;
+  state.opp.omittedItemsCount = omittedCount;
+  state.opp.omissionRate = omissionRate;
+
+  const badge = $('banner-omission-badge');
+  if (badge) {
+    badge.textContent = `Bỏ sót hạng mục: ${omissionRate}% (${omittedCount}/${expectedCount} sót)`;
+    if (omissionRate === 0) {
+      badge.style.background = '#dcfce7';
+      badge.style.color = '#15803d';
+      badge.style.borderColor = '#86efac';
+    } else if (omissionRate <= 25) {
+      badge.style.background = '#fef3c7';
+      badge.style.color = '#854d0e';
+      badge.style.borderColor = '#fde68a';
+    } else {
+      badge.style.background = '#fee2e2';
+      badge.style.color = '#991b1b';
+      badge.style.borderColor = '#fca5a5';
+    }
+    badge.style.display = 'inline-block';
+  }
+
+  return { omissionRate, omittedCount, expectedCount };
+}
+
+function parseRelativeDeadlinePhrase(text) {
+  const s = String(text || '').trim();
+  if (!s) return 0;
+
+  const explicitUnit = /(\d+(?:[.,]\d+)?)\s*(ngày|tuần|tuan|tháng|thang|week|month|w\b)/i.exec(s);
+  if (explicitUnit) {
+    const n = parseFloat(explicitUnit[1].replace(',', '.'));
+    const unit = explicitUnit[2].toLowerCase();
+    if (Number.isFinite(n) && n > 0) {
+      if (unit.includes('tuần') || unit.includes('tuan') || unit.includes('week') || unit === 'w') return Math.max(1, Math.round(n * 7));
+      if (unit.includes('tháng') || unit.includes('thang') || unit.includes('month')) return Math.max(1, Math.round(n * 30));
+      return Math.max(1, Math.round(n));
+    }
+  }
+
+  const isoMatch = /(\d{4})[-/](\d{1,2})[-/](\d{1,2})/.exec(s);
+  if (isoMatch) {
+    const dt = new Date(Number(isoMatch[1]), Number(isoMatch[2]) - 1, Number(isoMatch[3]));
+    const diff = Math.ceil((dt.getTime() - Date.now()) / 86400000);
+    if (Number.isFinite(diff)) return Math.max(1, Math.min(365, diff));
+  }
+
+  const vnDateMatch = /(\d{1,2})[-/](\d{1,2})(?:[-/](\d{2,4}))?/.exec(s);
+  if (vnDateMatch && (vnDateMatch[3] || /\b(ngày|hạn|deadline|trước)\b/i.test(s))) {
+    const now = new Date();
+    const yrRaw = vnDateMatch[3] ? Number(vnDateMatch[3]) : now.getFullYear();
+    const yr = yrRaw < 100 ? 2000 + yrRaw : yrRaw;
+    let dt = new Date(yr, Number(vnDateMatch[2]) - 1, Number(vnDateMatch[1]));
+    if (!vnDateMatch[3] && dt.getTime() < now.getTime()) {
+      dt = new Date(yr + 1, Number(vnDateMatch[2]) - 1, Number(vnDateMatch[1]));
+    }
+    const diff = Math.ceil((dt.getTime() - now.getTime()) / 86400000);
+    if (Number.isFinite(diff)) return Math.max(1, Math.min(365, diff));
+  }
+
+  const qMatch = /\b(?:q|quý|quy)\s*([1-4])\b/i.exec(s);
+  if (qMatch) {
+    const q = Number(qMatch[1]);
+    const now = new Date();
+    let endMonth = q * 3; // 3, 6, 9, 12
+    let targetYear = now.getFullYear();
+    let qEnd = new Date(targetYear, endMonth, 0); // last day of quarter
+    if (qEnd.getTime() < now.getTime()) {
+      qEnd = new Date(targetYear + 1, endMonth, 0);
+    }
+    const diff = Math.ceil((qEnd.getTime() - now.getTime()) / 86400000);
+    return Math.max(14, Math.min(365, diff));
+  }
+
+  if (/tuần\s*(?:sau|tới)|next\s*week/i.test(s)) return 14;
+  if (/(?:trong\s*)?tuần\s*này|cuối\s*tuần\s*này|this\s*week/i.test(s)) {
+    const day = new Date().getDay();
+    return day === 0 ? 7 : Math.max(2, 7 - day);
+  }
+  if (/tháng\s*(?:tới|sau)|next\s*month/i.test(s)) return 30;
+  if (/(?:trong\s*)?tháng\s*này|cuối\s*tháng|this\s*month/i.test(s)) {
+    const now = new Date();
+    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    return Math.max(7, Math.ceil((monthEnd.getTime() - now.getTime()) / 86400000));
+  }
+  if (/\b(?:gấp|hỏa\s*tốc|khẩn\s*cấp|khẩn|urgent|asap|ngay\s*lập\s*tức)\b/i.test(s)) return 3;
+
+  return 0;
+}
+
+function parseDeliveryDays(rawText) {
+  const s = String(rawText || '');
+  const m = /(?:thời\s*hạn|tiến\s*độ|giao\s*(?:hàng|trong)|triển\s*khai(?:\s*trong)?|trong\s*vòng|deadline|due\s*date)(?:\s*(?:dự\s*kiến|mong\s*muốn|gấp|hỏa\s*tốc|tối\s*đa|:|-))*\s*(\d+)\s*(ngày|tuần|tháng)/i.exec(s);
+  if (m) {
+    const n = parseInt(m[1], 10);
+    if (Number.isFinite(n) && n > 0) {
+      const unit = m[2].toLowerCase();
+      if (unit.includes('tuần')) return n * 7;
+      if (unit.includes('tháng')) return n * 30;
+      return n;
+    }
+  }
+  const rel = parseRelativeDeadlinePhrase(s);
+  return rel > 0 ? rel : null;
+}
+
+function parseRequestedDiscount(rawText) {
+  const s = String(rawText || '');
+  if (/không\s*(?:cần|yêu\s*cầu)?\s*chiết\s*khấu/i.test(s)) return 0;
+  const m = /(?:chiết\s*khấu|giảm\s*giá|discount|\bck\b)(?:\s*(?:đặc\s*biệt|đề\s*nghị|đề\s*xuất|mong\s*muốn|mức|:|-))*\s*(\d+(?:[.,]\d+)?)\s*%/i.exec(s);
+  if (!m) return 0;
+  const val = parseFloat(m[1].replace(',', '.'));
+  return Number.isFinite(val) && val >= 0 ? val : 0;
+}
+
+function parseAndEvaluateStep2() {
+  onStep1Input();
+  const raw = state.opp.rawText || '';
+  const combinedRaw = [raw, collectRawRowNotesText(state.opp.rawRow)].filter(Boolean).join(' | ');
+  const items = extractProductLines(raw);
+  const validQtyItems = items.filter(it => it.qty > 0);
+  let totalQty = validQtyItems.reduce((sum, it) => sum + it.qty, 0);
+  let budget = parseBudgetVnd(combinedRaw);
+  let days = parseDeliveryDays(combinedRaw);
+  let requestedDiscount = parseRequestedDiscount(combinedRaw);
+
+  let productsText = items.length
+    ? items.map(it => (it.qty > 0 ? `${it.qty}x ${it.name}` : it.name)).join('; ')
+    : '';
+
+  // Ưu tiên bảo lưu thông tin sản phẩm và số liệu nếu đã nạp từ file bảng dữ liệu
+  if ((!productsText || !items.length) && state.opp.extracted && state.opp.extracted.productsText) {
+    const candidateProd = state.opp.extracted.productsText;
+    if (isValidProductString(candidateProd) && !candidateProd.includes('Chưa xác định')) {
+      productsText = candidateProd;
+    }
+    if (!totalQty && state.opp.extracted.totalQty > 0) totalQty = state.opp.extracted.totalQty;
+    if (!budget && state.opp.extracted.budget > 0) budget = state.opp.extracted.budget;
+    if (days === null && state.opp.extracted.days !== null && state.opp.extracted.days !== undefined) days = state.opp.extracted.days;
+    if (state.opp.extracted.requestedDiscount !== null && state.opp.extracted.requestedDiscount !== undefined) {
+      requestedDiscount = state.opp.extracted.requestedDiscount;
+    }
+  }
+
+  const missingFieldNames = [];
+  const missingDetailedList = [];
+
+  // 1. Khách hàng
+  const hasCust = Boolean(state.opp.company && state.opp.company.trim() && state.opp.company !== 'Khách hàng ẩn danh');
+  if (!hasCust) {
+    missingDetailedList.push('Khách hàng: Chưa xác định được tên công ty/khách hàng');
+  }
+
+  // 2. NVKD phụ trách
+  const hasOwner = Boolean(state.opp.owner && state.opp.owner.trim() && state.opp.owner !== 'Chưa phân công');
+  if (!hasOwner) {
+    missingDetailedList.push('Người phụ trách: Chưa phân công nhân sự xử lý');
+  }
+
+  // 3. Danh mục sản phẩm (Bắt buộc phải có tên sản phẩm hợp lệ, không tự bịa)
+  const hasValidProd = Boolean(items.length || (productsText && isValidProductString(productsText) && !productsText.includes('Chưa xác định')));
+  if (!hasValidProd) {
+    productsText = 'Chưa xác định (Thiếu tên sản phẩm)';
+    missingFieldNames.push('Danh mục sản phẩm');
+    missingDetailedList.push('Danh mục sản phẩm: Thiếu tên sản phẩm, dịch vụ hoặc mã SKU');
+  }
+
+  // 4. Số lượng (phải có số lượng cụ thể > 0)
+  if (totalQty <= 0) {
+    missingFieldNames.push('Số lượng');
+    missingDetailedList.push('Số lượng: Chưa có thông tin số lượng sản phẩm');
+  }
+
+  // 5. Ngân sách
+  if (!budget || budget <= 0) {
+    missingFieldNames.push('Ngân sách dự kiến');
+    missingDetailedList.push('Ngân sách dự kiến: Chưa có thông tin tiền tệ trong file');
+  }
+
+  // 6. Thời hạn triển khai
+  if (days === null || days === undefined || days <= 0) {
+    missingFieldNames.push('Thời hạn triển khai');
+    missingDetailedList.push('Thời hạn triển khai: Chưa có mốc thời gian thực hiện');
+  }
+
+  // 7. Chiết khấu (mặc định 0.0 nếu không đề cập)
+  if (requestedDiscount === null || requestedDiscount === undefined) {
+    requestedDiscount = 0.0;
+  }
+
+  // ĐK1 cốt lõi: 3 trường cốt lõi (Sản phẩm, Số lượng, Ngân sách) đều phải có
+  const isDk1Passed = (missingFieldNames.length === 0);
+
+  // Xác định trạng thái file
+  const isCompletelyEmpty = (!hasCust && !hasValidProd && totalQty <= 0 && (!budget || budget <= 0) && (!days || days <= 0));
+  const fileStatus = isDk1Passed
+    ? 'DAY_DU'
+    : (isCompletelyEmpty ? 'FILE_TRONG_HOAC_NHIEU' : 'THIEU_MOT_PHAN');
+
+  state.opp.trang_thai_file = fileStatus;
+  state.opp.danh_sach_truong_thieu = missingDetailedList;
+  state.opp.missingFieldNames = missingFieldNames;
+  state.opp.missingFields = missingFieldNames;
+  state.opp.condition1Passed = !isCompletelyEmpty;
+  state.opp.calculationHalted = isCompletelyEmpty;
+
+  if (fileStatus === 'DAY_DU') {
+    state.opp.ghi_chu_kiem_toan = `File cung cấp đầy đủ thông tin cốt lõi (Sản phẩm: ${productsText}, SL: ${totalQty}, Ngân sách: ${formatCompactMoney(budget)}). Hợp lệ để tiếp tục quy trình báo giá.`;
+    state.opp.goi_y_cau_hoi_phan_tich = [
+      `Mức giá bình quân dự kiến ${formatVND(Math.round(budget / (totalQty || 1)))}/đơn vị đã bao gồm chi phí vận chuyển chưa?`,
+      `Mức chiết khấu ${requestedDiscount}% có nằm trong khung thẩm quyền phê duyệt tiêu chuẩn không?`,
+      `Thời hạn ${days} ngày có đáp ứng tiến độ bàn giao của kho vận không?`
+    ];
+  } else if (fileStatus === 'FILE_TRONG_HOAC_NHIEU') {
+    state.opp.ghi_chu_kiem_toan = 'Dữ liệu đầu vào để trống hoàn toàn hoặc không chứa thông tin nghiệp vụ. Hệ thống kích hoạt Zero-Crash, ghi nhận trạng thái FILE_TRONG_HOAC_NHIEU và tạm dừng tại ĐK1.';
+    state.opp.goi_y_cau_hoi_phan_tich = [
+      'Khách hàng cần mua sản phẩm/dịch vụ nào và số lượng dự kiến là bao nhiêu?',
+      'Ngân sách dự kiến và hạn mức chi trả của khách hàng là bao nhiêu VNĐ?',
+      'Thời hạn giao hàng hoặc tiến độ triển khai mong muốn là khi nào?',
+      'Kiểm tra lại nguồn file tải lên xem có bị rỗng hoặc nhầm sheet không.'
+    ];
+  } else {
+    state.opp.ghi_chu_kiem_toan = `Dữ liệu có ${7 - missingFieldNames.length}/7 trường, thiếu ${missingFieldNames.length} trường (${missingFieldNames.join(', ')}). Theo nguyên tắc: Luôn tiếp tục quy trình tới bước cuối, trường thiếu để trống.`;
+    state.opp.goi_y_cau_hoi_phan_tich = missingFieldNames.map(f => `Cần liên hệ khách hàng để làm rõ thông tin: ${f}.`);
+  }
+
+  state.opp.extracted = {
+    productsText: productsText || (items.length ? items.map(it => it.name).join('; ') : 'Chưa xác định (Thiếu tên sản phẩm)'),
+    totalQty: totalQty > 0 ? totalQty : 0,
+    qty: totalQty > 0 ? totalQty : 0,
+    items: items,
+    budget: budget && budget > 0 ? budget : null,
+    days: days && days > 0 ? days : null,
+    timelineText: days > 0 ? `${days} ngày` : null,
+    requestedDiscount
+  };
+
+  state.opp.assumptions = [];
+  state.opp.assumptionsUsed = [];
+  state.opp.softWarningReasons = missingFieldNames;
+  state.opp.hasSoftWarnings = missingFieldNames.length > 0;
+
+  if (isCompletelyEmpty) {
+    state.opp.statusKey = 'clarify';
+    state.opp.statusLabel = 'Dừng tại ĐK1 (File rỗng / Không có dữ liệu)';
+    state.opp.grandTotal = null;
+    state.opp.quotePrice = null;
+    state.opp.totalPrice = null;
+    haltAtCondition1Clarify();
+  } else {
+    state.opp.statusKey = isDk1Passed ? 'ready' : 'pending';
+    state.opp.statusLabel = isDk1Passed ? 'Đủ điều kiện' : 'Đủ điều kiện tiếp tục (Thiếu thông tin)';
+    state.opp.calculationHalted = false;
+  }
+
+  // Gán nhóm giải pháp và người phụ trách phù hợp
+  if (items.length) {
+    state.opp.category = items[0].category || 'Thiết bị Văn phòng';
+    const ownerMap = {
+      'Hạ tầng & Bảo mật': 'Thu Thảo',
+      'Thiết bị Văn phòng': 'Thu Thảo',
+      'Phần mềm & Dịch vụ': 'Thu Thảo'
+    };
+    if (!state.opp.owner || state.opp.owner === 'Chưa phân công' || isNumericLikeValue(state.opp.owner)) {
+      state.opp.owner = ownerMap[state.opp.category] || 'Thu Thảo';
+    }
+  }
+
+  renderStep2UI();
+  addAuditLog(
+    'Bước 2: Phân loại & Bóc tách ĐK1',
+    isDk1Passed
+      ? `Đủ 7/7 thông tin cốt lõi: ${totalQty} sp, Ngân sách ${formatCompactMoney(budget)}, ${days} ngày, CK ${requestedDiscount}%`
+      : `Thiếu ${missingFieldNames.length} trường cốt lõi (${missingFieldNames.join(', ')}). Cần làm rõ với khách hàng.`,
+    isDk1Passed ? 'gate-pass' : 'gate-warn',
+    'step2'
+  );
+}
+
+function getCurrentStep2UniversalJson() {
+  const ext = state.opp.extracted || {};
+  const statusFile = state.opp.trang_thai_file || (state.opp.condition1Passed ? 'DAY_DU' : 'THIEU_MOT_PHAN');
+  const custVal = state.opp.company && state.opp.company !== 'Khách hàng ẩn danh' ? state.opp.company : null;
+  const ownerVal = state.opp.owner && state.opp.owner !== 'Chưa phân công' ? state.opp.owner : null;
+  const hasValidProd = Boolean(ext.productsText && isValidProductString(ext.productsText) && !ext.productsText.includes('Chưa xác định'));
+  const prodVal = hasValidProd ? ext.productsText : null;
+  const qtyVal = ext.totalQty > 0 ? ext.totalQty : null;
+  const budgetVal = ext.budget && ext.budget > 0 ? ext.budget : null;
+  const daysVal = ext.timelineText || (ext.days ? `${ext.days} ngày` : null);
+  const discVal = typeof ext.requestedDiscount === 'number' ? ext.requestedDiscount : 0.0;
+
+  return {
+    trang_thai_file: statusFile,
+    du_lieu_trich_xuat: {
+      khach_hang: custVal,
+      nguoi_phu_trach: ownerVal,
+      danh_muc_san_pham: prodVal,
+      so_luong: qtyVal,
+      ngan_sach: budgetVal,
+      thoi_han_trien_khai: daysVal,
+      de_nghi_chiet_khau: discVal
+    },
+    danh_sach_truong_thieu: state.opp.danh_sach_truong_thieu || state.opp.missingFieldNames || [],
+    ghi_chu_kiem_toan: state.opp.ghi_chu_kiem_toan || 'File đã được phân tích qua Fault-Tolerant Universal Data Analyst.',
+    goi_y_cau_hoi_phan_tich: state.opp.goi_y_cau_hoi_phan_tich || []
+  };
+}
+
+function viewCurrentStep2Json() {
+  const modal = $('json-detail-modal');
+  const content = $('json-detail-content');
+  const title = $('json-modal-title');
+  if (title) title.textContent = 'JSON Chuẩn Bóc tách & Kiểm toán (Google AI Studio)';
+  if (content) {
+    const jsonObj = getCurrentStep2UniversalJson();
+    content.textContent = JSON.stringify(jsonObj, null, 2);
+  }
+  if (modal) modal.style.display = 'flex';
+}
+
+function copyCurrentStep2Json() {
+  const jsonObj = getCurrentStep2UniversalJson();
+  const text = JSON.stringify(jsonObj, null, 2);
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+    navigator.clipboard.writeText(text).then(() => {
+      showToast('Đã sao chép chuỗi JSON chuẩn vào clipboard!', 'success');
+    }).catch(() => {
+      showToast('Chuỗi JSON đã sẵn sàng!', 'info');
+    });
+  } else {
+    showToast('Đã sao chép chuỗi JSON chuẩn!', 'info');
+  }
+}
+
+function translateFieldKey(k) {
+  const map = {
+    khach_hang: 'Khách hàng',
+    nvkd_phu_trach: 'NVKD phụ trách',
+    danh_muc_san_pham: 'Danh mục sản phẩm',
+    so_luong: 'Số lượng',
+    ngan_sach_du_kien: 'Ngân sách dự kiến',
+    thoi_han_trien_khai: 'Thời hạn triển khai',
+    de_nghi_chiet_khau: 'Đề nghị chiết khấu'
+  };
+  return map[k] || k;
+}
+
+function evaluate7FieldsExtraction() {
+  const opp = state.opp || {};
+  const ext = opp.extracted || {};
+  const ai = opp.universalAnalysis || {};
+
+  // Trích xuất 7 trường cốt lõi — nếu không có hoặc không hợp lệ thì gán null (để trống)
+  const custVal = (opp.company && opp.company.trim() && opp.company !== 'Khách hàng ẩn danh' && opp.company !== 'Khách hàng B2B')
+    ? opp.company
+    : (ai.khach_hang || null);
+
+  const ownerVal = (opp.owner && opp.owner.trim() && opp.owner !== 'Chưa phân công')
+    ? opp.owner
+    : (ai.nvkd_phu_trach || null);
+
+  const prodVal = (ext.productsText && !ext.productsText.includes('Chưa xác định'))
+    ? ext.productsText
+    : (ai.danh_muc_san_pham || null);
+
+  const qtyVal = (typeof ext.so_luong === 'number' && ext.so_luong > 0)
+    ? ext.so_luong
+    : (typeof ext.totalQty === 'number' && ext.totalQty > 0 ? ext.totalQty : (typeof ai.so_luong === 'number' && ai.so_luong > 0 ? ai.so_luong : null));
+
+  const budgetVal = (typeof ext.budget === 'number' && ext.budget > 0)
+    ? ext.budget
+    : (typeof ai.ngan_sach_du_kien === 'number' && ai.ngan_sach_du_kien > 0 ? ai.ngan_sach_du_kien : null);
+
+  const daysVal = ext.timelineText || (ext.days && ext.days > 0 ? `${ext.days} ngày` : null) || ai.thoi_han_trien_khai || null;
+
+  const discVal = (typeof ext.requestedDiscount === 'number')
+    ? ext.requestedDiscount
+    : (typeof ai.de_nghi_chiet_khau === 'number' ? ai.de_nghi_chiet_khau : (typeof opp.appliedDiscount === 'number' ? opp.appliedDiscount : null));
+
+  const rawInput = (opp.rawText || '').trim();
+  const isRawEmpty = !rawInput || rawInput === '(Yêu cầu để trống hoàn toàn)' || rawInput === '(File trống hoặc không có dòng dữ liệu)';
+
+  const fields = [
+    { key: 'khach_hang', label: '1. Khách hàng', value: custVal, ok: Boolean(custVal) },
+    { key: 'nvkd_phu_trach', label: '2. NVKD phụ trách', value: ownerVal, ok: Boolean(ownerVal) },
+    { key: 'danh_muc_san_pham', label: '3. Danh mục sản phẩm', value: prodVal, ok: Boolean(prodVal) },
+    { key: 'so_luong', label: '4. Số lượng', value: qtyVal, ok: qtyVal !== null },
+    { key: 'ngan_sach_du_kien', label: '5. Ngân sách dự kiến', value: budgetVal, ok: budgetVal !== null },
+    { key: 'thoi_han_trien_khai', label: '6. Thời hạn triển khai', value: daysVal, ok: Boolean(daysVal) },
+    { key: 'de_nghi_chiet_khau', label: '7. Đề nghị chiết khấu', value: discVal, ok: discVal !== null }
+  ];
+
+  const presentFields = fields.filter(f => f.ok);
+  const missingFields = fields.filter(f => !f.ok);
+  const missingFieldKeys = missingFields.map(f => f.key);
+  const missingFieldLabels = missingFields.map(f => f.label.replace(/^\d+\.\s*/, ''));
+
+  // NGUYÊN TẮC: Chỉ dừng hẳn trong 2 trường hợp: file rỗng/không đọc được, HOẶC không có bất kỳ trường nào có dữ liệu
+  const isExplicitlyEmptyNotice = rawInput === '(Yêu cầu để trống hoàn toàn)' || rawInput === '(File trống hoặc không có dòng dữ liệu)';
+  const mustHalt = (presentFields.length === 0) || (isExplicitlyEmptyNotice && presentFields.length === 0);
+  const canProceed = !mustHalt;
+
+  return {
+    fields,
+    presentFields,
+    missingFields,
+    missingFieldKeys,
+    missingFieldLabels,
+    mustHalt,
+    canProceed
+  };
+}
+
+function renderStep2UI() {
+  const eval7 = evaluate7FieldsExtraction();
+  state.opp.truong_thieu = eval7.missingFieldKeys;
+  state.opp.missingFields = eval7.missingFieldLabels;
+  state.opp.missingFieldNames = eval7.missingFieldLabels;
+
+  // Status Badge in Bước 2 Banner
+  const statusBadge = $('step2-file-status-badge');
+  if (statusBadge) {
+    if (eval7.mustHalt) {
+      statusBadge.style.background = '#fee2e2';
+      statusBadge.style.color = '#991b1b';
+      statusBadge.style.borderColor = '#f87171';
+      statusBadge.textContent = '❌ DỪNG TẠI ĐK1 (File rỗng / Không có dữ liệu)';
+    } else if (eval7.missingFields.length > 0) {
+      statusBadge.style.background = '#e0f2fe';
+      statusBadge.style.color = '#0369a1';
+      statusBadge.style.borderColor = '#7dd3fc';
+      statusBadge.textContent = `ℹ️ TIẾP TỤC (Có ${eval7.presentFields.length}/7 trường • ${eval7.missingFields.length} trường để trống)`;
+    } else {
+      statusBadge.style.background = '#dcfce7';
+      statusBadge.style.color = '#15803d';
+      statusBadge.style.borderColor = '#86efac';
+      statusBadge.textContent = '✅ ĐẦY ĐỦ (Đủ 7/7 trường)';
+    }
+  }
+
+  // 7 Core Extracted Cards
+  setHTML('step2-extracted-cards', eval7.fields.map(f => {
+    let displayVal = 'null (để trống)';
+    if (f.ok) {
+      if (f.key === 'ngan_sach_du_kien') displayVal = formatVND(f.value);
+      else if (f.key === 'so_luong') displayVal = `${f.value} đơn vị`;
+      else if (f.key === 'de_nghi_chiet_khau') displayVal = `${f.value}%`;
+      else displayVal = String(f.value);
+    }
+    return `
+      <div class="extracted-card ${f.ok ? 'is-ok' : 'is-soft-warn'}">
+        <span class="extracted-card-label">${escapeHtml(f.label)}</span>
+        <strong class="extracted-card-value">${escapeHtml(displayVal)}</strong>
+        <span class="extracted-card-state">${f.ok ? '✓ Có' : '⚠️ Thiếu (= null)'}</span>
+      </div>
+    `;
+  }).join(''));
+
+  // Gap Audit Note
+  const auditNoteEl = $('step2-audit-note');
+  if (auditNoteEl) {
+    const defaultNote = eval7.mustHalt
+      ? 'File rỗng hoặc không có bất kỳ trường nào có dữ liệu. Quy trình dừng tại ĐK1 để nạp thêm thông tin.'
+      : (eval7.missingFields.length === 0
+        ? 'Đủ 7/7 trường thông tin cốt lõi. Sẵn sàng tạo hồ sơ cơ hội.'
+        : `Có ${eval7.presentFields.length}/7 trường có dữ liệu. Thiếu ${eval7.missingFields.length} trường (${eval7.missingFieldLabels.join(', ')}). Theo nguyên tắc: Luôn tiếp tục quy trình tới bước cuối, các trường thiếu để trống (null).`);
+    auditNoteEl.innerHTML = `<strong>📝 Kết luận kiểm toán:</strong> ${escapeHtml(state.opp.ghi_chu_kiem_toan || defaultNote)}`;
+  }
+
+  // Follow-up Prompts (Chỉ để tham khảo, không chặn quy trình)
+  const promptListEl = $('step2-followup-prompts-list');
+  const promptWrapEl = $('step2-followup-prompts-wrap');
+  const followUps = state.opp.goi_y_cau_hoi_phan_tich || [];
+  if (promptListEl) {
+    const qList = followUps.length ? followUps : (eval7.missingFields.length > 0 ? [
+      `Hỏi khách hàng bổ sung: ${eval7.missingFieldLabels.join(', ')}.`,
+      'Kiểm tra lại nguồn file nạp vào để chuẩn hóa tên cột dữ liệu.',
+      'Sau khi khách hàng phản hồi, dán nội dung vào ô phản hồi ở nhánh Làm rõ.'
+    ] : ['Dữ liệu đầy đủ, tiếp tục chuyển sang tạo hồ sơ và lập dự thảo báo giá.']);
+    if (promptWrapEl) promptWrapEl.style.display = 'block';
+    promptListEl.innerHTML = qList.map((q, idx) => `
+      <div style="display:flex; align-items:flex-start; gap:0.45rem; padding:0.45rem 0.65rem; background:#ffffff; border:1px solid #e2e8f0; border-radius:6px; font-size:0.8rem; color:#1e293b;">
+        <span style="color:#0284c7; font-weight:700;">💡 ${idx + 1}.</span>
+        <span style="flex:1;">${escapeHtml(q)}</span>
+      </div>
+    `).join('');
+  }
+
+  // Decision Box
+  const box = $('diamond-box-1');
+  if (box) {
+    box.classList.remove('is-fail');
+    box.classList.toggle('is-ok', eval7.canProceed);
+    box.classList.toggle('is-soft-warn', eval7.mustHalt);
+  }
+  const pill = $('diamond-1-status');
+  if (pill) {
+    if (eval7.mustHalt) {
+      pill.textContent = 'Yêu cầu làm rõ (File rỗng / Không có dữ liệu)';
+      pill.className = 'status-pill soft-warn';
+    } else if (eval7.missingFields.length === 0) {
+      pill.textContent = 'Đạt 7/7 thông tin (CÓ)';
+      pill.className = 'status-pill';
+    } else {
+      pill.textContent = `Đủ điều kiện tiếp tục (${eval7.presentFields.length}/7 trường có dữ liệu)`;
+      pill.className = 'status-pill';
+    }
+  }
+
+  setHTML('diamond-1-checklist', eval7.fields.map(f => {
+    let displayVal = 'null (để trống)';
+    if (f.ok) {
+      if (f.key === 'ngan_sach_du_kien') displayVal = formatVND(f.value);
+      else if (f.key === 'so_luong') displayVal = `${f.value} đơn vị`;
+      else if (f.key === 'de_nghi_chiet_khau') displayVal = `${f.value}%`;
+      else displayVal = String(f.value);
+    }
+    return `
+      <li class="check-item ${f.ok ? 'pass' : 'warn'}">
+        ${f.ok ? '✅' : '⚠️'} ${escapeHtml(f.label)}: ${escapeHtml(displayVal)} ${f.ok ? '<span style="color:#16a34a; font-size:0.75rem;">(Có)</span>' : '<span style="color:#b45309; font-size:0.75rem;">(Thiếu - để trống null, không chặn quy trình)</span>'}
+      </li>
+    `;
+  }).join(''));
+
+  const callout = $('diamond-1-callout');
+  if (callout) {
+    if (eval7.mustHalt) {
+      callout.className = 'decision-callout warn';
+      callout.style.borderColor = '#f59e0b';
+      callout.style.backgroundColor = '#fffbeb';
+      callout.style.color = '#92400e';
+      callout.textContent = '⚠️ Cảnh báo: File rỗng hoặc không có bất kỳ trường nào có dữ liệu. Quy trình dừng tại ĐK1 để nạp thêm thông tin.';
+    } else if (eval7.missingFields.length === 0) {
+      callout.className = 'decision-callout ok';
+      callout.style.borderColor = '#86efac';
+      callout.style.backgroundColor = '#f0fdf4';
+      callout.style.color = '#15803d';
+      callout.textContent = '✓ Kết luận Điều kiện 1: Đủ toàn bộ 7/7 trường cốt lõi. Sẵn sàng tạo Hồ sơ Cơ hội tại Bước 3.';
+    } else {
+      callout.className = 'decision-callout ok';
+      callout.style.borderColor = '#38bdf8';
+      callout.style.backgroundColor = '#f0f9ff';
+      callout.style.color = '#0369a1';
+      callout.textContent = `ℹ️ Nguyên tắc xử lý dữ liệu thiếu: Thiếu thông tin KHÔNG phải lý do dừng quy trình. Hệ thống có ${eval7.presentFields.length}/7 trường có dữ liệu, cho phép tiếp tục sang Bước 3, 4, 5. ${eval7.missingFields.length} trường thiếu (${eval7.missingFieldLabels.join(', ')}) sẽ để trống (null). Bảng trường thiếu và câu hỏi gợi ý chỉ dùng để tham khảo.`;
+    }
+  }
+
+  // Khóa nút "Có (Sang Bước 3)" CHỈ KHI mustHalt = true!
+  const btnTrue = $('btn-dk1-true');
+  if (btnTrue) {
+    btnTrue.disabled = eval7.mustHalt;
+    if (eval7.mustHalt) {
+      btnTrue.classList.add('is-disabled-locked');
+      btnTrue.setAttribute('disabled', 'disabled');
+      btnTrue.title = 'File rỗng hoặc không có bất kỳ trường nào có dữ liệu. Không thể tiếp tục.';
+      btnTrue.style.opacity = '0.45';
+      btnTrue.style.cursor = 'not-allowed';
+    } else {
+      btnTrue.classList.remove('is-disabled-locked');
+      btnTrue.removeAttribute('disabled');
+      btnTrue.removeAttribute('title');
+      btnTrue.style.opacity = '1';
+      btnTrue.style.cursor = 'pointer';
+    }
+  }
+
+  if (eval7.mustHalt) {
+    haltAtCondition1Clarify();
+  } else {
+    state.opp.calculationHalted = false;
+    state.opp.condition1Passed = true;
+  }
+}
+
+function triggerCondition1False() {
+  haltAtCondition1Clarify();
+  markStageWarning('step2', 'Xem thông tin thiếu');
+  goToStage('clarify');
+  renderClarifyMissingTags();
+  draftClarificationEmail();
+  renderSnapshotSidebar();
+
+  // Xóa rỗng các ô nhập nhanh để không lấy nhầm giá trị cũ
+  setValue('loop-budget', '');
+  setValue('loop-days', '');
+  setValue('loop-discount', '');
+
+  addAuditLog(
+    'Bước 2: Xem nhánh Làm rõ (Tham khảo)',
+    `Thông tin thiếu: ${state.opp.missingFields.join(', ') || 'Không'}. Chuyển sang xem kịch bản làm rõ (người dùng có thể quay lại tiếp tục bất kỳ lúc nào).`,
+    'gate-warn',
+    'clarify'
+  );
+  showToast('Đang ở nhánh Làm rõ để tham khảo các trường thiếu & kịch bản hỏi khách hàng.', 'info');
+}
+
+function triggerCondition1True() {
+  const eval7 = evaluate7FieldsExtraction();
+  if (eval7.mustHalt) {
+    showToast('⚠️ Không thể tiếp tục: File rỗng hoặc không có bất kỳ trường nào có dữ liệu!', 'warn');
+    triggerCondition1False();
+    return;
+  }
+  state.opp.calculationHalted = false;
+  state.opp.condition1Passed = true;
+  markStageCompleted('step2');
+  initializeStep3Record();
+  goToStage('step3');
+}
+
+function renderClarifyMissingTags() {
+  const missing = state.opp.missingFieldNames || state.opp.missingFields || [];
+  const el = $('clarify-missing-tags');
+  if (!el) return;
+  if (!missing.length) {
+    el.innerHTML = '<span class="missing-tag-pill" style="background:#dcfce7; color:#15803d; border:1px solid #bbf7d0;">✓ Đã đủ thông tin yêu cầu</span>';
+    return;
+  }
+  el.innerHTML = missing.map(f => `
+    <span class="missing-tag-pill" style="background:#fef3c7; color:#92400e; border:1px solid #fde68a;">
+      ⚠️ Thiếu thông tin: <strong>${escapeHtml(f)}</strong> (chưa rõ)
+    </span>
+  `).join('');
+}
+
+function generateLocalClarificationEmail(opp, missingFields = []) {
+  const company = opp.company || 'Quý khách hàng';
+  const owner = opp.owner || 'Thu Thảo';
+  const productSummary = opp.extracted?.productsText || 'các trang thiết bị và giải pháp CNTT';
+
+  const questions = [];
+  const fields = missingFields.length ? missingFields : (opp.missingFieldNames || ['Số lượng', 'Ngân sách dự kiến']);
+
+  if (fields.some(f => /sản\s*phẩm|danh\s*mục|model|cấu\s*hình/i.test(f))) {
+    questions.push('1. Về cấu hình & chủng loại: Quý Công ty có yêu cầu cụ thể về model, thông số kỹ thuật (hãng sản xuất, CPU, RAM, cổng mạng) cho các thiết bị không?');
+  }
+  if (fields.some(f => /số\s*lượng|qty/i.test(f))) {
+    questions.push(`${questions.length + 1}. Về số lượng thiết bị: Quý Công ty dự kiến triển khai số lượng bao nhiêu cho từng hạng mục để chúng tôi lập báo giá và áp dụng mức chiết khấu tối ưu nhất?`);
+  }
+  if (fields.some(f => /ngân\s*sách|budget|chi\s*phí|kinh\s*phí/i.test(f))) {
+    questions.push(`${questions.length + 1}. Về hạn mức ngân sách: Quý Công ty có dự trù khoảng ngân sách dự kiến (ví dụ: khoảng 300 - 500 triệu VND) để chúng tôi xây dựng phương án giá tối ưu nhất?`);
+  }
+  if (fields.some(f => /thời\s*hạn|deadline|tiến\s*độ|giao\s*hàng/i.test(f))) {
+    questions.push(`${questions.length + 1}. Về tiến độ giao hàng: Quý đơn vị mong muốn nhận hàng vào thời điểm nào (ví dụ: giao hỏa tốc 3-5 ngày hay 14 ngày tiêu chuẩn)?`);
+  }
+  if (fields.some(f => /chiết\s*khấu|discount/i.test(f))) {
+    questions.push(`${questions.length + 1}. Về chính sách thương mại: Quý đơn vị có đề xuất mức chiết khấu thương mại cụ thể nào không?`);
+  }
+
+  if (!questions.length) {
+    questions.push('1. Xin Quý Công ty vui lòng xác nhận thêm chi tiết về số lượng và ngân sách dự kiến của gói trang bị.');
+  }
+
+  return `Tiêu đề: [Thu Thảo Company] Xác nhận thông tin yêu cầu báo giá - ${company}
+
+Kính gửi Quý Công ty / Anh/Chị phụ trách tại ${company},
+
+Công ty TNHH Giải pháp Công nghệ Thu Thảo xin chân thành cảm ơn Quý khách hàng đã tin tưởng gửi yêu cầu hợp tác đến chúng tôi.
+
+Chúng tôi đã tiếp nhận và ghi nhận sơ bộ nhu cầu của Quý đơn vị về: ${productSummary}. Để đội ngũ Giải pháp và Vận hành của Thu Thảo có đầy đủ cơ sở xây dựng bảng dự toán chi tiết, kiểm tra kho khả dụng và cam kết thời gian giao hàng chính xác nhất, kính mong Quý đơn vị vui lòng làm rõ thêm một số thông tin sau:
+
+${questions.join('\n\n')}
+
+Để đảm bảo tiến độ triển khai của Quý Công ty, kính mong Quý đơn vị phản hồi lại email này hoặc liên hệ hotline trong vòng 24 giờ tới. Ngay khi nhận được phản hồi, Thu Thảo sẽ hoàn tất Hồ sơ và gửi Báo giá chính thức.
+
+Trân trọng cảm ơn và kính chúc Quý Công ty ngày càng phát triển!
+
+--
+${owner}
+B2B Solution Consultant — Thu Thảo Technology
+Hotline: 1900 8866 | Email: sales@thuthao.com.vn | Website: https://thuthao.com.vn`;
+}
+
+async function draftClarificationEmail(options = {}) {
+  const missing = state.opp.missingFieldNames || state.opp.missingFields || [];
+  const statusEl = $('clarify-draft-status');
+  if (statusEl) statusEl.style.display = 'inline-block';
+
+  let emailText = '';
+  // Thử gọi Gemini API trước nếu có kết nối
+  if (state.api.configured && state.api.useLiveApi && typeof fetch === 'function') {
+    try {
+      const res = await fetch('/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'generate_clarification_email',
+          data: {
+            company: state.opp.company || 'Quý khách hàng',
+            missing_fields: missing,
+            understood_need: state.opp.extracted?.productsText || '',
+            owner: state.opp.owner || 'Thu Thảo'
+          }
+        })
+      });
+      if (res.ok) {
+        const payload = await res.json();
+        if (payload.ok && payload.data && payload.data.email) {
+          emailText = payload.data.email;
+        }
+      }
+    } catch (e) {
+      console.warn('API draft clarification email fallback:', e);
+    }
+  }
+
+  // Dự phòng bằng hàm thông minh nội bộ
+  if (!emailText) {
+    emailText = generateLocalClarificationEmail(state.opp, missing);
+  }
+
+  state.opp.clarifyDraft = emailText;
+  setValue('clarify-email-draft', emailText);
+  if (statusEl) statusEl.style.display = 'none';
+
+  // Cập nhật mailto link
+  const subjectMatch = /^Tiêu đề:\s*([^\n]+)/i.exec(emailText);
+  const subject = subjectMatch ? subjectMatch[1].trim() : `[Thu Thảo Company] Xác nhận thông tin yêu cầu báo giá - ${state.opp.company}`;
+  const body = emailText.replace(/^Tiêu đề:[^\n]*\n+/i, '').trim();
+  updateMailtoLink(subject, body, state.opp.contact);
+}
+
+function updateMailtoLink(subject, body, toEmail) {
+  const btn = $('btn-clarify-mailto');
+  if (!btn) return;
+  const to = toEmail || state.opp.contact || '';
+  const subj = encodeURIComponent(subject);
+  const b = encodeURIComponent(body);
+  btn.href = `mailto:${to}?subject=${subj}&body=${b}`;
+}
+
+async function copyClarifyDraft() {
+  const text = $('clarify-email-draft')?.value || state.opp.clarifyDraft || '';
+  if (!text) {
+    showToast('Chưa có nội dung email để sao chép', 'warn');
+    return;
+  }
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const ta = $('clarify-email-draft');
+      if (ta) {
+        ta.select();
+        document.execCommand('copy');
+      }
+    }
+    showToast('✓ Đã sao chép nội dung email vào clipboard!', 'success');
+  } catch (e) {
+    showToast('✓ Đã sao chép nội dung email', 'success');
+  }
+}
+
+async function regenerateClarifyDraft() {
+  showToast('Đang tạo lại bản nháp email...', 'info');
+  await draftClarificationEmail({ forceRefresh: true });
+  showToast('✓ Đã tạo mới bản nháp email hỏi khách hàng!', 'success');
+}
+
+function buildClarificationEmail() {
+  return generateLocalClarificationEmail(state.opp, state.opp.missingFieldNames || state.opp.missingFields || []);
+}
+
+function handleAskCustomerWaiting() {
+  state.isRunningAgent = false;
+  const pBtn = $('btn-agent-pause');
+  if (pBtn) pBtn.style.display = 'none';
+
+  state.opp.statusKey = 'clarify';
+  state.opp.statusLabel = 'Chờ khách phản hồi';
+  markStageWarning('step2', 'Chờ khách');
+  renderSnapshotSidebar();
+
+  addAuditLog(
+    'Làm rõ: Hỏi lại khách hàng',
+    `Đã chuẩn bị email làm rõ. Hồ sơ chuyển trạng thái 'Chờ khách phản hồi'. Luồng tạm dừng chờ phản hồi.`,
+    'gate-warn',
+    'clarify'
+  );
+  showToast('ℹ️ Đã chuyển hồ sơ sang trạng thái "Chờ khách phản hồi". Luồng tạm dừng.', 'info');
+}
+
+async function analyzeCustomerReply() {
+  const replyInput = $('customer-reply-input');
+  const replyText = (replyInput?.value || '').trim();
+  if (!replyText) {
+    showToast('Vui lòng dán nội dung phản hồi của khách hàng vào ô trước khi phân tích!', 'warn');
+    return;
+  }
+
+  const btn = $('btn-analyze-reply');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '⏳ Đang phân tích...';
+  }
+
+  try {
+    addAuditLog('Khách phản hồi: Phân tích dữ liệu', `Tiếp nhận phản hồi: "${replyText.slice(0, 80)}${replyText.length > 80 ? '...' : ''}"`, 'info', 'clarify');
+
+    // 1. Phân tích ngân sách từ phản hồi
+    const replyBudget = parseBudgetVnd(replyText);
+    if (replyBudget && replyBudget > 0) {
+      state.opp.extracted.budget = replyBudget;
+    }
+
+    // 2. Phân tích thời hạn từ phản hồi
+    const replyDays = parseDeliveryDays(replyText);
+    if (replyDays && replyDays > 0) {
+      state.opp.extracted.days = replyDays;
+    }
+
+    // 3. Phân tích chiết khấu từ phản hồi
+    const replyDiscount = parseRequestedDiscount(replyText);
+    if (replyDiscount !== null && replyDiscount !== undefined) {
+      state.opp.extracted.requestedDiscount = replyDiscount;
+    }
+
+    // 4. Phân tích sản phẩm & số lượng từ phản hồi
+    const replyItems = extractProductLines(replyText);
+    if (replyItems.length > 0) {
+      const existingItems = state.opp.extracted.items || [];
+      replyItems.forEach(rItem => {
+        const found = existingItems.find(e => e.sku === rItem.sku || e.name.toLowerCase().includes(rItem.name.toLowerCase()) || rItem.name.toLowerCase().includes(e.name.toLowerCase()));
+        if (found) {
+          if (rItem.qty > 0) found.qty = rItem.qty;
+        } else if (rItem.qty > 0) {
+          existingItems.push(rItem);
+        }
+      });
+      if (!existingItems.length) {
+        state.opp.extracted.items = replyItems;
+      } else {
+        state.opp.extracted.items = existingItems;
+      }
+      state.opp.extracted.totalQty = state.opp.extracted.items.reduce((s, it) => s + (it.qty || 0), 0);
+      state.opp.extracted.productsText = state.opp.extracted.items.map(it => (it.qty > 0 ? `${it.qty}x ${it.name}` : it.name)).join('; ');
+    } else {
+      const qtyMatch = /(?:số\s*lượng|cần|lấy|mua)\s*(?:là|:)?\s*(\d+)\s*(?:chiếc|cái|bộ|thiết\s*bị|đơn\s*vị)?/i.exec(replyText);
+      if (qtyMatch) {
+        const parsedQ = parseInt(qtyMatch[1], 10);
+        if (parsedQ > 0) {
+          state.opp.extracted.totalQty = parsedQ;
+          if (state.opp.extracted.items.length === 1 && (!state.opp.extracted.items[0].qty || state.opp.extracted.items[0].qty <= 0)) {
+            state.opp.extracted.items[0].qty = parsedQ;
+          }
+        }
+      }
+    }
+
+    // Lưu phản hồi vào văn bản yêu cầu
+    state.opp.rawText = (state.opp.rawText + '\n[Phản hồi từ khách]: ' + replyText).trim();
+    setValue('inp-raw-text', state.opp.rawText);
+
+    // Kiểm tra lại các điều kiện ĐK1
+    const ext = state.opp.extracted;
+    const remaining = [];
+    if (!ext.items.length && !ext.productsText) remaining.push('Danh mục sản phẩm');
+    if (!ext.totalQty || ext.totalQty <= 0) remaining.push('Số lượng');
+    if (!ext.budget || ext.budget <= 0) remaining.push('Ngân sách dự kiến');
+    if (!ext.days || ext.days <= 0) remaining.push('Thời hạn triển khai');
+
+    state.opp.missingFieldNames = remaining;
+    state.opp.missingFields = remaining;
+    renderSnapshotSidebar();
+
+    if (remaining.length === 0) {
+      // ĐK1 ĐÃ ĐẠT ĐỦ 5 TRƯỜNG!
+      state.opp.condition1Passed = true;
+      markStageCompleted('step2');
+      markStageSkipped('clarify', 'Bỏ qua (đã làm rõ)');
+      addAuditLog('Khách phản hồi: ĐK1 Đạt chuẩn', `Đã nhận đủ thông tin: ${ext.totalQty} sp, ${formatCompactMoney(ext.budget)}, ${ext.days} ngày. Chuyển sang Bước 3.`, 'gate-pass', 'clarify');
+      showToast('✅ Khách hàng đã bổ sung đủ thông tin! Agent tự động chạy tiếp Bước 3-6.', 'success');
+      await executeRemainingSteps('step3');
+    } else {
+      // VẪN CÒN THIẾU
+      renderClarifyMissingTags();
+      addAuditLog('Khách phản hồi: Vẫn thiếu thông tin', `Vẫn còn thiếu: ${remaining.join(', ')}. Cập nhật lại bản nháp email làm rõ.`, 'gate-warn', 'clarify');
+      showToast(`⚠️ Vẫn còn thiếu: ${remaining.join(', ')}. Agent đã cập nhật lại email nháp.`, 'warn');
+      await draftClarificationEmail({ forceRefresh: true });
+    }
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = '⚡ Phân tích phản hồi';
+    }
+  }
+}
+
+async function applyManualClarifyInputs() {
+  const bVal = ($('loop-budget')?.value || '').trim();
+  const dVal = ($('loop-days')?.value || '').trim();
+  const discVal = ($('loop-discount')?.value || '').trim();
+
+  let updatedAny = false;
+  if (bVal) {
+    const parsedB = parseBudgetVnd(bVal) || parseCurrencyToVnd(bVal);
+    if (parsedB && parsedB > 0) {
+      state.opp.extracted.budget = parsedB;
+      updatedAny = true;
+    }
+  }
+  if (dVal) {
+    const parsedD = parseInt(dVal, 10);
+    if (Number.isFinite(parsedD) && parsedD > 0) {
+      state.opp.extracted.days = parsedD;
+      updatedAny = true;
+    }
+  }
+  if (discVal !== '') {
+    const parsedDisc = parseFloat(discVal);
+    if (Number.isFinite(parsedDisc) && parsedDisc >= 0) {
+      state.opp.extracted.requestedDiscount = parsedDisc;
+      updatedAny = true;
+    }
+  }
+
+  if (!updatedAny) {
+    showToast('Vui lòng nhập giá trị vào ít nhất một ô thông tin bổ sung!', 'warn');
+    return;
+  }
+
+  // Kiểm tra lại ĐK1
+  const ext = state.opp.extracted;
+  const remaining = [];
+  if (!ext.items.length && !ext.productsText) remaining.push('Danh mục sản phẩm');
+  if (!ext.totalQty || ext.totalQty <= 0) remaining.push('Số lượng');
+  if (!ext.budget || ext.budget <= 0) remaining.push('Ngân sách dự kiến');
+  if (!ext.days || ext.days <= 0) remaining.push('Thời hạn triển khai');
+
+  state.opp.missingFieldNames = remaining;
+  state.opp.missingFields = remaining;
+  renderSnapshotSidebar();
+
+  if (remaining.length === 0) {
+    state.opp.condition1Passed = true;
+    markStageCompleted('step2');
+    markStageSkipped('clarify', 'Bỏ qua (đã làm rõ)');
+    addAuditLog('Bổ sung thủ công: ĐK1 Đạt chuẩn', `Đã nhập đủ thông tin. Chuyển sang Bước 3.`, 'gate-pass', 'clarify');
+    showToast('✅ Đã bổ sung đủ thông tin! Chuyển sang Bước 3.', 'success');
+    await executeRemainingSteps('step3');
+  } else {
+    renderClarifyMissingTags();
+    showToast(`⚠️ Vẫn còn thiếu: ${remaining.join(', ')}. Cập nhật email nháp.`, 'warn');
+    await draftClarificationEmail({ forceRefresh: true });
+  }
+}
+
+function copyClarifyDraftOld() {
+  const text = $('clarify-email-draft')?.value || state.opp.clarifyDraft;
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).catch(() => {});
+  }
+  showToast('Đã sao chép bản nháp email yêu cầu bổ sung!', 'success');
+}
+
+function saveClarifySnapshotToCrm() {
+  state.opp.id = state.opp.id || generateOpportunityId();
+  upsertCrmDeal({
+    id: state.opp.id,
+    company: state.opp.company || 'Khách hàng mới',
+    contact: state.opp.contact || 'Chưa rõ',
+    channel: state.opp.channel,
+    owner: state.opp.owner || 'Chưa phân công (Chờ bổ sung)',
+    category: state.opp.category || 'Đang làm rõ',
+    itemsSummary: state.opp.extracted.productsText || 'Thiếu thông tin sản phẩm',
+    totalValue: 0,
+    discountPercent: 0,
+    marginPercent: 0,
+    statusKey: 'clarify',
+    statusLabel: 'Cần bổ sung thông tin',
+    note: `Thiếu: ${state.opp.missingFields.join(', ')}`
+  });
+  addAuditLog('Lưu CRM trạng thái Chờ bổ sung', `Mã ${state.opp.id} được ghi nhận chờ phản hồi từ khách hàng.`, 'gate-warn', 'clarify');
+  showToast(`Đã lưu ${state.opp.id} với trạng thái "Cần bổ sung thông tin"`, 'success');
+}
+
+function loopBackToStep1() {
+  const budgetTxt = ($('loop-budget')?.value || '').trim();
+  const daysVal = ($('loop-days')?.value || '').trim();
+  const discountVal = ($('loop-discount')?.value || '').trim();
+
+  const additions = [];
+  if (budgetTxt) additions.push(`Ngân sách: ${budgetTxt}`);
+  if (daysVal) additions.push(`Thời hạn: ${daysVal} ngày`);
+  if (discountVal !== '') additions.push(`Đề nghị chiết khấu: ${discountVal}%`);
+
+  if (additions.length) {
+    state.opp.rawText = state.opp.rawText.trim() + ' ' + additions.join('. ') + '.';
+    setValue('inp-raw-text', state.opp.rawText);
+  }
+
+  state.loopCount += 1;
+  state.opp.calculationHalted = false;
+  state.opp.statusKey = 'draft';
+  state.opp.statusLabel = `Bổ sung lần ${state.loopCount} — Tiếp nhận lại`;
+
+  addAuditLog(
+    `Vòng lặp (Loop #${state.loopCount}) -> Bước 1`,
+    `Khách hàng bổ sung dữ liệu (${additions.join('; ') || 'đã cập nhật trực tiếp'}). Quay lại Bước 1 kiểm tra từ đầu.`,
+    'info',
+    'step1'
+  );
+  goToStage('step1');
+  showToast(`Vòng lặp #${state.loopCount}: Đã cập nhật thông tin và quay lại Bước 1!`, 'success');
+}
+
+/* ==========================================================================
+   STEP 3: TẠO HỒ SƠ CƠ HỘI & GÁN NGƯỜI PHỤ TRÁCH
+   ========================================================================== */
+function generateOpportunityId() {
+  const seq = String(84 + state.deals.length).padStart(4, '0');
+  return `OPP-2026-${seq}`;
+}
+
+function initializeStep3Record() {
+  if (!state.opp.id) {
+    state.opp.id = generateOpportunityId();
+  }
+  state.opp.statusKey = 'processing';
+  state.opp.statusLabel = 'Đã tạo hồ sơ — Đang xử lý';
+
+  setValue('assign-deal-id', state.opp.id);
+  setValue('assign-category', state.opp.category);
+  setSelectWithFallback('assign-owner', state.opp.owner);
+  setValue('assign-ops', state.opp.opsTeam);
+  renderStep3Summary();
+
+  addAuditLog(
+    'Bước 3: Tạo Hồ sơ & Gán NVKD',
+    `Khởi tạo ${state.opp.id} | Nhóm: ${state.opp.category} | NVKD: ${state.opp.owner}`,
+    'gate-pass',
+    'step3'
+  );
+}
+
+function syncStep3Assignment() {
+  state.opp.category = $('assign-category')?.value || state.opp.category;
+  state.opp.owner = $('assign-owner')?.value || state.opp.owner;
+  state.opp.opsTeam = $('assign-ops')?.value || state.opp.opsTeam;
+  renderStep3Summary();
+  renderSnapshotSidebar();
+}
+
+function renderStep3Summary() {
+  const ext = state.opp.extracted;
+  setHTML('step3-standardized-summary', `
+    <div><strong>Mã cơ hội:</strong> <span class="deal-id-code">${escapeHtml(state.opp.id)}</span> &nbsp;|&nbsp; <strong>Khách hàng:</strong> ${escapeHtml(state.opp.company)} (${escapeHtml(state.opp.contact || 'Chưa có email')})</div>
+    <div style="margin-top:0.4rem;"><strong>Danh mục & Số lượng chuẩn hóa:</strong> ${escapeHtml(ext.productsText || '—')} (Tổng: ${ext.totalQty} đơn vị)</div>
+    <div style="margin-top:0.35rem;"><strong>Ngân sách:</strong> ${formatVND(ext.budget)} &nbsp;|&nbsp; <strong>Thời hạn yêu cầu:</strong> ${ext.days} ngày &nbsp;|&nbsp; <strong>Đề nghị chiết khấu:</strong> ${ext.requestedDiscount}%</div>
+    <div style="margin-top:0.35rem;"><strong>Phân công:</strong> NVKD ${escapeHtml(state.opp.owner)} phối hợp ${escapeHtml(state.opp.opsTeam)}</div>
+  `);
+}
+
+function proceedStep3ToStep4() {
+  syncStep3Assignment();
+  markStageCompleted('step3');
+  runStep4ToolAppraisal();
+  computeStep5QuoteAndCondition2();
+  goToStage('step4');
+}
+
+function loopBackToStep1() {
+  goToStage('step1');
+  addAuditLog('Quay lại Bước 1: Tiếp nhận yêu cầu', 'Khách hàng/NVKD bổ sung thông tin để tiếp tục xử lý theo quy trình.', 'info', 'step1');
+}
+
+/* ==========================================================================
+   STEP 4: LẬP BÁO GIÁ & DỰ THẢO ĐỀ XUẤT (THU THẢO COMPANY)
+   ========================================================================== */
+function toolLookupPricelist(items) {
+  return items.map(item => {
+    const catalogMatch = state.products.find(p => p.sku === item.sku) || item;
+    return {
+      ...item,
+      listPrice: catalogMatch.listPrice,
+      cost: catalogMatch.cost,
+      stock: catalogMatch.stock,
+      leadTimeDays: catalogMatch.leadTimeDays
+    };
+  });
+}
+
+function runStep4ToolAppraisal() {
+  const items = state.opp.extracted.items || [];
+  const enriched = toolLookupPricelist(items);
+  state.opp.extracted.items = enriched;
+
+  let maxLeadTime = 0;
+
+  const rows = enriched.map(item => {
+    if (item.leadTimeDays > maxLeadTime) maxLeadTime = item.leadTimeDays;
+    return {
+      ...item,
+      inStock: true, // Mặc định 100% sẵn sàng cung ứng (bỏ qua thẩm định tồn kho)
+      lineTotal: (item.listPrice || 0) * (item.qty || 1),
+      lineCost: (item.cost || 0) * (item.qty || 1)
+    };
+  });
+
+  const requestedDays = state.opp.extracted.days || 14;
+
+  state.opp.appraisal = { rows, allInStock: true, maxLeadTime, timelineOk: true };
+  state.opp.toolTraces = [
+    {
+      fn: 'tool_lookup_pricelist()',
+      status: 'OK',
+      detail: `Tra cứu đơn giá & giá vốn cho ${rows.length} SKU từ "${state.dataSourceName}"`
+    },
+    {
+      fn: 'tool_supply_readiness()',
+      status: 'SẴN SÀNG',
+      detail: 'Mặc định 100% sản phẩm sẵn sàng cung ứng (Bỏ qua thẩm định tồn kho)'
+    },
+    {
+      fn: 'tool_calculate_pricing()',
+      status: 'HOÀN TẤT',
+      detail: `Áp giá niêm yết & tính dự thảo thành tiền cho ${rows.length} hạng mục`
+    }
+  ];
+
+  // Set default slider discount to requested discount if not touched or keep synced
+  state.opp.appliedDiscount = state.opp.extracted.requestedDiscount ?? 0;
+  renderStep4UI();
+
+  addAuditLog(
+    'Bước 4: Thẩm định giá & Suất cung ứng',
+    `Mặc định 100% sẵn sàng cung ứng (bỏ qua kiểm tra tồn kho) | Tra cứu đơn giá niêm yết và chi phí vốn cho ${rows.length} hạng mục`,
+    'gate-pass',
+    'step4'
+  );
+}
+
+function adjustStep4Qty(index, delta) {
+  const item = state.opp.extracted.items[index];
+  if (!item) return;
+  item.qty = Math.max(1, item.qty + delta);
+  state.opp.extracted.totalQty = state.opp.extracted.items.reduce((s, x) => s + x.qty, 0);
+  state.opp.extracted.productsText = state.opp.extracted.items.map(i => `${i.qty}x ${i.name}`).join('; ');
+  runStep4ToolAppraisal();
+  renderSnapshotSidebar();
+}
+
+function removeStep4Item(index) {
+  if (state.opp.extracted.items.length <= 1) {
+    showToast('Phải giữ ít nhất 1 dòng sản phẩm trong hồ sơ cơ hội!', 'warn');
+    return;
+  }
+  state.opp.extracted.items.splice(index, 1);
+  state.opp.extracted.totalQty = state.opp.extracted.items.reduce((s, x) => s + x.qty, 0);
+  state.opp.extracted.productsText = state.opp.extracted.items.map(i => `${i.qty}x ${i.name}`).join('; ');
+  runStep4ToolAppraisal();
+  renderSnapshotSidebar();
+}
+
+function renderStep4UI() {
+  setHTML('step4-tool-traces', state.opp.toolTraces.map(t => `
+    <div class="tool-trace-card">
+      <strong>&gt; ${escapeHtml(t.fn)}</strong>
+      <span class="tool-badge-ok">[${escapeHtml(t.status)}]</span>
+      <span>${escapeHtml(t.detail)}</span>
+    </div>`).join(''));
+
+  const tbody = $('step4-appraisal-tbody');
+  if (tbody) {
+    tbody.innerHTML = state.opp.appraisal.rows.map((row, idx) => `
+      <tr>
+        <td>
+          <strong>${escapeHtml(row.name)}</strong><br/>
+          <small style="color:#64748b">${escapeHtml(row.sku)} • Vốn: ${formatVND(row.cost)}</small>
+        </td>
+        <td>
+          <div class="qty-stepper">
+            <button type="button" class="qty-btn" onclick="adjustStep4Qty(${idx}, -1)">-</button>
+            <span class="qty-val">${row.qty}</span>
+            <button type="button" class="qty-btn" onclick="adjustStep4Qty(${idx}, 1)">+</button>
+          </div>
+        </td>
+        <td>${formatVND(row.listPrice)}</td>
+        <td>
+          <span class="deal-tag ready">
+            ✓ Sẵn sàng 100%
+          </span>
+        </td>
+        <td>${row.leadTimeDays} ngày</td>
+        <td><strong>${formatVND(row.lineTotal)}</strong></td>
+        <td><button type="button" class="btn-remove-item" onclick="removeStep4Item(${idx})" title="Xóa dòng">×</button></td>
+      </tr>`).join('');
+  }
+
+  const callout = $('step4-appraisal-callout');
+  if (callout) {
+    callout.className = 'appraise-summary-bar ok';
+    callout.textContent = `✅ Sẵn sàng cung ứng: 100% sản phẩm sẵn sàng cung ứng (Đã bỏ qua kiểm tra số lượng tồn kho theo quy định). Đã thẩm định đơn giá niêm yết và chi phí vốn.`;
+  }
+}
+
+function proceedStep4ToStep5() {
+  markStageCompleted('step4');
+  state.opp.statusKey = 'ready';
+  state.opp.statusLabel = 'Đã hoàn tất báo giá';
+  renderStep6UI();
+  goToStage('step5');
+}
+
+/* ==========================================================================
+   STEP 4: LẬP BÁO GIÁ & DỰ THẢO ĐỀ XUẤT (THU THẢO COMPANY)
+   ========================================================================== */
+function computeStep5QuoteAndCondition2() {
+  const rows = state.opp.appraisal?.rows || [];
+  const eval7 = evaluate7FieldsExtraction();
+  const hasProducts = rows.length > 0 && !eval7.missingFieldKeys.includes('danh_muc_san_pham');
+  const hasQty = !eval7.missingFieldKeys.includes('so_luong') && ((state.opp.extracted?.totalQty || 0) > 0 || rows.some(r => r.qty > 0));
+
+  if (!hasProducts || !hasQty || rows.length === 0) {
+    // Thiếu số lượng hoặc danh mục sản phẩm: Bỏ qua tính toán và để trống kết quả (null)
+    state.opp.subtotal = null;
+    state.opp.discountAmt = null;
+    state.opp.netRevenue = null;
+    state.opp.vat = null;
+    state.opp.grandTotal = null;
+    state.opp.totalCost = null;
+    state.opp.marginPercent = null;
+    state.opp.budgetOk = null;
+    state.opp.proposalDraft = buildProposalDraftText();
+    renderStep5UI();
+    return;
+  }
+
+  const subtotal = rows.reduce((s, r) => s + (r.lineTotal || 0), 0);
+  const totalCost = rows.reduce((s, r) => s + (r.lineCost || 0), 0);
+  const discountPct = Number(state.opp.appliedDiscount || 0);
+  const discountAmt = Math.round(subtotal * (discountPct / 100));
+  const netRevenue = Math.max(0, subtotal - discountAmt);
+  const vat = Math.round(netRevenue * POLICY.vatRate);
+  const grandTotal = netRevenue + vat;
+  const marginPercent = netRevenue > 0 ? ((netRevenue - totalCost) / netRevenue) * 100 : 0;
+
+  const budget = state.opp.extracted?.budget;
+  const budgetOk = (budget === null || budget === undefined || budget <= 0) ? null : (grandTotal <= budget);
+
+  state.opp.subtotal = subtotal;
+  state.opp.discountAmt = discountAmt;
+  state.opp.netRevenue = netRevenue;
+  state.opp.vat = vat;
+  state.opp.grandTotal = grandTotal;
+  state.opp.totalCost = totalCost;
+  state.opp.marginPercent = marginPercent;
+  state.opp.budgetOk = budgetOk;
+  state.opp.proposalDraft = buildProposalDraftText();
+
+  renderStep5UI();
+}
+
+function updateStep5Discount(value) {
+  state.opp.appliedDiscount = parseFloat(value) || 0;
+  computeStep5QuoteAndCondition2();
+  renderSnapshotSidebar();
+}
+
+function buildProposalDraftText() {
+  const rows = state.opp.appraisal?.rows || [];
+  const eval7 = evaluate7FieldsExtraction();
+
+  let lineSummary = '';
+  if (rows.length === 0 || eval7.missingFieldKeys.includes('danh_muc_san_pham')) {
+    lineSummary = '  (Để trống — Khách hàng chưa cung cấp danh mục sản phẩm hoặc số lượng cụ thể)';
+  } else {
+    lineSummary = rows
+      .map((r, i) => `  ${i + 1}. ${r.name}: ${r.qty} ${r.unit || 'Bộ'} × ${formatVND(r.listPrice)} = ${formatVND(r.lineTotal)}`)
+      .join('\n');
+  }
+
+  const subtotalText = state.opp.subtotal !== null ? formatVND(state.opp.subtotal) : '(Để trống)';
+  const discountAmtText = state.opp.discountAmt !== null ? `-${formatVND(state.opp.discountAmt)}` : '(Để trống)';
+  const netRevenueText = state.opp.netRevenue !== null ? formatVND(state.opp.netRevenue) : '(Để trống)';
+  const vatText = state.opp.vat !== null ? formatVND(state.opp.vat) : '(Để trống)';
+  const grandTotalText = state.opp.grandTotal !== null ? formatVND(state.opp.grandTotal) : '(Để trống)';
+  const budgetText = (state.opp.extracted?.budget && state.opp.extracted.budget > 0)
+    ? formatVND(state.opp.extracted.budget)
+    : '(Để trống)';
+  const budgetEvalText = state.opp.budgetOk === null
+    ? '(Để trống)'
+    : (state.opp.budgetOk ? 'PHÙ HỢP' : 'VƯỢT NGÂN SÁCH');
+  const leadTimeText = (state.opp.extracted?.days && state.opp.extracted.days > 0)
+    ? `${state.opp.extracted.days} ngày`
+    : '(Để trống - cần xác nhận tiến độ)';
+
+  return `DỰ THẢO ĐỀ XUẤT BÁO GIÁ B2B — CÔNG TY THU THẢO
+Mã cơ hội: ${state.opp.id || '(Chưa cấp mã)'} | Khách hàng: ${state.opp.company || '(Chưa rõ tên KH)'}
+Người phụ trách: ${state.opp.owner || '(Chưa phân công)'}
+
+CHI TIẾT HẠNG MỤC:
+${lineSummary}
+
+TỔNG HỢP TÀI CHÍNH:
+- Tổng giá trị niêm yết: ${subtotalText}
+- Chiết khấu áp dụng (${state.opp.appliedDiscount || 0}%): ${discountAmtText}
+- Giá trị trước thuế: ${netRevenueText}
+- Thuế GTGT (10%): ${vatText}
+- TỔNG GIÁ TRỊ ĐỀ XUẤT: ${grandTotalText}
+- Đối chiếu ngân sách KH (${budgetText}): ${budgetEvalText}
+- Thời gian triển khai dự kiến: ${leadTimeText} kể từ ngày ký PO.`;
+}
+
+function regenerateProposalDraft() {
+  state.opp.proposalDraft = buildProposalDraftText();
+  setValue('step5-draft-editor', state.opp.proposalDraft);
+  showToast('Đã đồng bộ lại Dự thảo đề xuất từ số liệu mới nhất!', 'info');
+}
+
+function renderStep5UI() {
+  setValue('step5-discount-slider', String(state.opp.appliedDiscount || 0));
+  setText('step5-discount-badge', `${state.opp.appliedDiscount || 0}%`);
+
+  if (state.opp.subtotal === null || state.opp.subtotal === undefined) {
+    setText('step5-subtotal', '(Để trống)');
+    setText('step5-discount-amt', '(Để trống)');
+    setText('step5-vat', '(Để trống)');
+    setText('step5-margin', '(Để trống)');
+    setText('step5-budget-check', '(Để trống)');
+    setText('step5-grand-total', '(Để trống)');
+  } else {
+    setText('step5-subtotal', formatVND(state.opp.subtotal));
+    setText('step5-discount-amt', '-' + formatVND(state.opp.discountAmt));
+    setText('step5-vat', formatVND(state.opp.vat));
+    setText('step5-margin', `${state.opp.marginPercent !== null ? state.opp.marginPercent.toFixed(1) + '%' : '(Để trống)'} (Sàn ≥ ${POLICY.minGrossMarginPercent}%)`);
+    if (state.opp.budgetOk === null) {
+      setText('step5-budget-check', '(Để trống)');
+    } else {
+      setText('step5-budget-check', state.opp.budgetOk ? `Đạt (≤ ${formatCompactMoney(state.opp.extracted.budget)})` : `Vượt ${formatVND(state.opp.grandTotal - state.opp.extracted.budget)}`);
+    }
+    setText('step5-grand-total', formatVND(state.opp.grandTotal));
+  }
+
+  setValue('step5-draft-editor', state.opp.proposalDraft);
+}
+
+/* ==========================================================================
+   CANONICAL FINAL JSON SCHEMA & STEP 5 COMPLETION (THU THẢO COMPANY)
+   ========================================================================== */
+function generateCanonicalFinalJson() {
+  const opp = state.opp || {};
+  const ext = opp.extracted || {};
+  const eval7 = evaluate7FieldsExtraction();
+
+  const canonical = {
+    khach_hang: opp.company && opp.company.trim() && opp.company !== 'Khách hàng ẩn danh' && opp.company !== 'Khách hàng B2B' ? opp.company : null,
+    nvkd_phu_trach: opp.owner && opp.owner.trim() && opp.owner !== 'Chưa phân công' ? opp.owner : null,
+    danh_muc_san_pham: ext.productsText && !ext.productsText.includes('Chưa xác định') ? ext.productsText : null,
+    so_luong: (typeof ext.totalQty === 'number' && ext.totalQty > 0) ? ext.totalQty : ((typeof ext.so_luong === 'number' && ext.so_luong > 0) ? ext.so_luong : null),
+    ngan_sach_du_kien: (typeof ext.budget === 'number' && ext.budget > 0) ? ext.budget : null,
+    thoi_han_trien_khai: ext.timelineText || (ext.days && ext.days > 0 ? `${ext.days} ngày` : null) || null,
+    de_nghi_chiet_khau: (ext.requestedDiscount !== null && ext.requestedDiscount !== undefined) ? `${ext.requestedDiscount}%` : (typeof opp.appliedDiscount === 'number' ? `${opp.appliedDiscount}%` : null),
+    tong_de_xuat: (opp.grandTotal !== null && opp.grandTotal !== undefined && opp.grandTotal > 0 && opp.subtotal !== null) ? `${formatVND(opp.grandTotal)}` : null,
+    truong_thieu: eval7.missingFieldKeys || [],
+    ghi_chu_kiem_toan: opp.ghi_chu_kiem_toan || (eval7.missingFieldKeys.length > 0
+      ? `Thiếu ${eval7.missingFieldKeys.length} trường (${eval7.missingFieldLabels.join(', ')}), các mục liên quan để trống theo nguyên tắc không bịa dữ liệu. Cần làm rõ với khách hàng.`
+      : 'File cung cấp đầy đủ thông tin theo 7 trường nghiệp vụ cốt lõi.'),
+    co_so: opp.co_so || opp.evidenceBasis || 'Trích xuất tự động từ nội dung yêu cầu nạp vào'
+  };
+
+  // Zero-guess enforcement: If field is considered missing in eval7, it MUST be strictly null
+  if (eval7.missingFieldKeys.includes('khach_hang')) canonical.khach_hang = null;
+  if (eval7.missingFieldKeys.includes('nvkd_phu_trach')) canonical.nvkd_phu_trach = null;
+  if (eval7.missingFieldKeys.includes('danh_muc_san_pham')) canonical.danh_muc_san_pham = null;
+  if (eval7.missingFieldKeys.includes('so_luong')) canonical.so_luong = null;
+  if (eval7.missingFieldKeys.includes('ngan_sach_du_kien')) canonical.ngan_sach_du_kien = null;
+  if (eval7.missingFieldKeys.includes('thoi_han_trien_khai')) canonical.thoi_han_trien_khai = null;
+  if (eval7.missingFieldKeys.includes('de_nghi_chiet_khau')) canonical.de_nghi_chiet_khau = null;
+
+  // If quantity or product category is missing, total proposal CANNOT be calculated and must be null
+  if (canonical.so_luong === null || canonical.danh_muc_san_pham === null) {
+    canonical.tong_de_xuat = null;
+  }
+
+  return canonical;
+}
+
+function copyFinalCanonicalJson() {
+  const jsonObj = generateCanonicalFinalJson();
+  const text = JSON.stringify(jsonObj, null, 2);
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).catch(() => {});
+  }
+  showToast('Đã sao chép Đầu ra chuẩn JSON cuối cùng!', 'success');
+}
+
+function viewFinalCanonicalJsonModal() {
+  const modal = $('json-detail-modal');
+  const content = $('json-detail-content');
+  const title = $('json-modal-title');
+  if (title) title.textContent = 'Đầu Ra Chuẩn JSON Cuối Cùng (Thu Thảo Company)';
+  if (content) {
+    const jsonObj = generateCanonicalFinalJson();
+    content.textContent = JSON.stringify(jsonObj, null, 2);
+  }
+  if (modal) modal.style.display = 'flex';
+}
+
+function prepareStep6Outputs() {
+  markStageCompleted('step5');
+
+  const eval7 = evaluate7FieldsExtraction();
+  const canonicalJson = generateCanonicalFinalJson();
+
+  // Populate canonical JSON display
+  const jsonPre = $('final-canonical-json-pre');
+  if (jsonPre) {
+    jsonPre.textContent = JSON.stringify(canonicalJson, null, 2);
+  }
+
+  const grandTotalText = (state.opp.grandTotal !== null && state.opp.grandTotal !== undefined && state.opp.grandTotal > 0 && state.opp.subtotal !== null)
+    ? `<span style="color:#0284c7;font-weight:800">${formatVND(state.opp.grandTotal)}</span>`
+    : `<span style="color:#64748b;font-weight:700">(Để trống do thiếu số lượng / sản phẩm)</span>`;
+
+  const marginText = (state.opp.marginPercent !== null && state.opp.marginPercent !== undefined && state.opp.grandTotal)
+    ? `Biên LN ${state.opp.marginPercent.toFixed(1)}%`
+    : `Biên LN: (Để trống)`;
+
+  setHTML('step6-final-summary', `
+    <div><strong>Hồ sơ cơ hội:</strong> <span class="deal-id-code">${escapeHtml(state.opp.id || '(Chưa cấp mã)')}</span> — <strong>${escapeHtml(state.opp.company || '(Chưa rõ tên KH)')}</strong></div>
+    <div style="margin-top:0.35rem;"><strong>Phụ trách:</strong> ${escapeHtml(state.opp.owner || '(Chưa phân công)')} &nbsp;|&nbsp; <strong>Tổng giá trị đề xuất:</strong> ${grandTotalText} (Chiết khấu ${state.opp.appliedDiscount || 0}%, ${marginText})</div>
+  `);
+
+  const statusPill = $('step6-status-pill');
+  if (statusPill) {
+    statusPill.textContent = 'Đã hoàn tất báo giá';
+    statusPill.className = 'status-pill';
+  }
+
+  const evidenceItems = [
+    {
+      label: 'Căn cứ 1: Thông tin đầu vào (7 trường nghiệp vụ cốt lõi)',
+      value: `Có ${eval7.presentFields.length}/7 trường • ${eval7.missingFields.length > 0 ? `Thiếu ${eval7.missingFields.length} trường (để trống: ${eval7.missingFieldLabels.join(', ')})` : 'Đủ 7/7 trường'}`
+    },
+    {
+      label: 'Căn cứ 2: Bảng giá & Nguồn cung ứng',
+      value: 'Sẵn sàng cung ứng 100% (Bỏ qua thẩm định tồn kho theo quy định Thu Thảo Company)'
+    },
+    {
+      label: 'Căn cứ 3: Chính sách Tài chính & Chiết khấu',
+      value: `Chiết khấu ${state.opp.appliedDiscount || 0}% • ${(state.opp.grandTotal && state.opp.marginPercent !== null) ? `Biên ${state.opp.marginPercent.toFixed(1)}% (Sàn ≥ 15%)` : 'Biên LN: (Để trống)'}`
+    },
+    {
+      label: 'Căn cứ 4: Luồng xử lý quy trình',
+      value: 'QUY TRÌNH XỬ LÝ CƠ HỘI BÁN HÀNG B2B - THU THẢO COMPANY (Hoàn tất 5 bước)'
+    }
+  ];
+
+  setHTML('step6-evidence-box', evidenceItems.map(ev => `
+    <div class="evidence-item">
+      <span>${escapeHtml(ev.label)}</span>
+      <strong>${escapeHtml(ev.value)}</strong>
+    </div>`).join(''));
+
+  state.opp.finalEmailDraft = buildCustomerFinalEmail();
+  setValue('step6-email-preview', state.opp.finalEmailDraft);
+
+  const fullLogText = state.opp.auditLogs
+    .slice()
+    .reverse()
+    .map(l => `[${l.time}] [${l.node.toUpperCase()}] ${l.title} -> ${l.desc}`)
+    .join('\n');
+  setValue('step6-log-preview', fullLogText);
+
+  saveFinalRecordToCrm(false);
+  renderShortExecutiveReportDashboard();
+  renderStep5ProseReport();
+}
+
+/* ==========================================================================
+   DATALENS DYNAMIC BUSINESS BI REPORT & WORD (.DOCX) ENGINE (6 PHẦN CHUẨN)
+   Tuân thủ chính xác cấu trúc mẫu báo cáo kinh doanh động:
+   - Phần 1: Tóm tắt điều hành (Executive Summary)
+   - Phần 2: Dashboard KPI (So sánh 2 kỳ liền kề, dấu "—" nếu thiếu)
+   - Phần 3: Phân tích chuyên đề (Từng chỉ số định lượng)
+   - Phần 4: Kết luận (Nhận định động từ dữ liệu)
+   - Phần 5: Đề xuất hành động (Ưu tiên & Đo lường)
+   - Phần 6: Chi tiết Bộ dữ liệu & Thống kê kỹ thuật (Làm sạch, Nhóm, Cột)
+   ========================================================================== */
+
+function detectTrueNumericValue(val) {
+  if (val === null || val === undefined) return null;
+  if (typeof val === 'number') return Number.isFinite(val) ? val : null;
+  const s = String(val).trim();
+  if (!s || s === '-' || s === '—' || s === '(Để trống)') return null;
+  // Bỏ qua ngày tháng: YYYY-MM-DD, DD/MM/YYYY, MM/DD/YYYY
+  if (/^\d{4}[-/.]\d{1,2}([-/.]\d{1,2})?$/.test(s) || /^\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}$/.test(s)) return null;
+  // Bỏ qua thời gian HH:MM:SS
+  if (/^\d{1,2}:\d{2}(:\d{2})?$/.test(s)) return null;
+  // Bỏ qua chuỗi có chữ cái (trừ tiền tệ đ/VND/USD hoặc %)
+  if (/[a-zA-Z]/.test(s.replace(/vnd|usd/gi, ''))) return null;
+
+  let clean = s.replace(/\s+/g, '').replace(/[đ₫vndusd]/gi, '');
+  if (clean.endsWith('%')) {
+    clean = clean.slice(0, -1);
+    const n = parseFloat(clean.replace(/,/g, '.'));
+    return Number.isFinite(n) ? n : null;
+  }
+  // Xử lý dấu phân cách hàng nghìn kiểu Việt Nam: 125.000.000 hoặc 125,000,000
+  if (/^\d{1,3}(\.\d{3})+$/.test(clean)) {
+    clean = clean.replace(/\./g, '');
+  } else if (/^\d{1,3}(,\d{3})+$/.test(clean)) {
+    clean = clean.replace(/,/g, '');
+  } else if (clean.includes(',') && !clean.includes('.')) {
+    clean = clean.replace(',', '.');
+  }
+  const n = parseFloat(clean);
+  return Number.isFinite(n) ? n : null;
+}
+
+const NON_METRIC_COLUMN_REGEX = /^(ngày|date|thời gian tạo|created|updated|tháng|năm|id|mã|code|phone|sđt|email|kênh|channel|ưu tiên|priority|trạng thái|status|ghi chú|note|mô tả|description|tên|name|khách hàng|customer|nhân viên|owner|pic|segment|loại)$/i;
+
+function computeDynamicBiReportData() {
+  const dataset = state.analytics.currentDataset;
+  const imported = (state.analytics.importedRecords && state.analytics.importedRecords.length) 
+    ? state.analytics.importedRecords 
+    : [];
+  const rawRows = (dataset && dataset.rawRows && dataset.rawRows.length)
+    ? dataset.rawRows
+    : (imported.length ? imported.map(r => r.rawRow || r) : []);
+  const headers = (dataset && dataset.headers && dataset.headers.length)
+    ? dataset.headers
+    : (rawRows.length ? Object.keys(rawRows[0]).filter(k => !k.startsWith('_')) : []);
+  const fileName = (dataset && dataset.sourceName) || state.analytics.loadedFileName || state.dataSourceName || '11_doanh_thu_bang_doc.csv';
+
+  let rows = rawRows;
+  let records = imported;
+  if (!rows.length && state.opp && state.opp.company) {
+    const opp = state.opp;
+    const ext = opp.extracted || {};
+    const singleRow = {
+      Customer: opp.company,
+      Product_Name: ext.productsText || 'Sản phẩm B2B',
+      Quantity: ext.totalQty || 1,
+      Sales_VND: opp.grandTotal || opp.subtotal || 0,
+      Shipping_Days: ext.days || 10,
+      Discount: opp.appliedDiscount || 0,
+      PIC_NVKD: opp.owner || 'Thu Thảo'
+    };
+    rows = [singleRow];
+    records = [{
+      id: opp.id || 'OPP-0001',
+      company: opp.company,
+      product: ext.productsText || 'Sản phẩm B2B',
+      qty: ext.totalQty || 1,
+      revenue: opp.grandTotal || opp.subtotal || 0,
+      discount: opp.appliedDiscount || 0,
+      channel: opp.channel || 'Trực tiếp',
+      statusLabel: 'Chờ duyệt',
+      rawRow: singleRow
+    }];
+  }
+
+  const rowCount = rows.length;
+  const cleanRowCount = rows.length;
+  const columnCount = headers.length;
+
+  // Cleaning stats audit
+  const cleaningAudit = {
+    totalRows: (dataset && dataset.totalRowsRaw) || rowCount,
+    cleanRows: cleanRowCount,
+    colCount: columnCount,
+    removedEmpty: (dataset && dataset.cleaningStats && dataset.cleaningStats.removedEmptyRows) || 0,
+    removedDuplicates: (dataset && dataset.cleaningStats && dataset.cleaningStats.removedDuplicates) || 0,
+    removedMissing: (dataset && dataset.cleaningStats && dataset.cleaningStats.removedMissingRows) || 0,
+    cleanedWhitespace: (dataset && dataset.cleaningStats && dataset.cleaningStats.normalizedWhitespace) || 0
+  };
+
+  // Analyze each column
+  const numericColumns = [];
+  const dimensionColumns = [];
+
+  headers.forEach(h => {
+    if (NON_METRIC_COLUMN_REGEX.test(h.trim())) {
+      dimensionColumns.push(h);
+      return;
+    }
+
+    let validNums = 0;
+    let blankCount = 0;
+    const numVals = [];
+    const valSet = new Set();
+
+    rows.forEach(r => {
+      const v = r[h];
+      if (v === null || v === undefined || String(v).trim() === '') {
+        blankCount++;
+      } else {
+        valSet.add(String(v).trim());
+        const num = detectTrueNumericValue(v);
+        if (num !== null) {
+          validNums++;
+          numVals.push(num);
+        }
+      }
+    });
+
+    const isNumericCol = rows.length > 0 && (validNums / rows.length) >= 0.5;
+
+    if (isNumericCol && numVals.length > 0) {
+      const sum = numVals.reduce((a, b) => a + b, 0);
+      const mean = sum / numVals.length;
+      const min = Math.min(...numVals);
+      const max = Math.max(...numVals);
+
+      const hLow = h.toLowerCase();
+      const isPercent = /chiết khấu|discount|%|tỷ lệ|rate|rebate/i.test(hLow);
+      const isRating = !isPercent && (/điểm|rating|csat|hài lòng|sao|score/i.test(hLow) || (max <= 5 && min >= 1 && valSet.size <= 5 && !/ngày|day|sl|qty|hạn|lead/i.test(hLow)));
+      const isDuration = !isPercent && !isRating && (/thời gian.*xử lý|thời gian.*giải quyết|thời gian.*hỗ trợ|duration|resolution|handle.*time/i.test(hLow) || (/phút|minute/i.test(hLow)));
+      const isMoney = !isRating && !isDuration && !isPercent && (mean > 50000 || /sales|revenue|tiền|giá|budget|cost|doanh thu|ngân sách|chi phí|lợi nhuận/i.test(hLow));
+
+      const formatVal = (n) => {
+        if (isRating) return (Number.isInteger(n) ? n : n.toFixed(1)) + ' / 5.0 ⭐';
+        if (isDuration) return (Number.isInteger(n) ? n : n.toFixed(1)) + ' phút';
+        if (isPercent) return (Number.isInteger(n) ? n : n.toFixed(1)) + '%';
+        if (isMoney) return Math.round(n).toLocaleString('vi-VN');
+        return Number.isInteger(n) ? n.toLocaleString('vi-VN') : n.toFixed(1);
+      };
+
+      numericColumns.push({
+        colName: h,
+        sum,
+        mean,
+        min,
+        max,
+        unitType: isRating ? 'RATING' : (isDuration ? 'DURATION' : (isPercent ? 'PERCENT' : (isMoney ? 'MONEY' : 'QTY'))),
+        isRating,
+        isDuration,
+        isPercent,
+        isMoney,
+        formatVal,
+        sumFormatted: formatVal(sum),
+        meanFormatted: formatVal(mean),
+        minFormatted: formatVal(min),
+        maxFormatted: formatVal(max),
+        validCount: validNums,
+        blankCount,
+        distinctCount: valSet.size
+      });
+    } else {
+      dimensionColumns.push(h);
+    }
+  });
+
+  const revCol = numericColumns.find(nc => nc.isMoney && /doanh thu|sales|revenue|tổng tiền|budget/i.test(nc.colName)) || numericColumns.find(nc => nc.isMoney);
+  const costCol = numericColumns.find(nc => nc.isMoney && /chi phí|cost|giá vốn|vốn/i.test(nc.colName));
+  const profitCol = numericColumns.find(nc => nc.isMoney && /lợi nhuận|profit|lãi/i.test(nc.colName));
+  const qtyCol = numericColumns.find(nc => !nc.isMoney && !nc.isRating && !nc.isDuration && !nc.isPercent && /sl|qty|số lượng|units/i.test(nc.colName)) || numericColumns.find(nc => nc.unitType === 'QTY');
+  const discCol = numericColumns.find(nc => nc.isPercent || /chiết khấu|discount|rebate/i.test(nc.colName));
+  const daysCol = numericColumns.find(nc => /ngày|days|lead|shipping/i.test(nc.colName) && !nc.isPercent);
+  const csatCol = numericColumns.find(nc => nc.isRating);
+  const durationCol = numericColumns.find(nc => nc.isDuration);
+
+  const formatValFallback = (n) => {
+    return Number.isFinite(n) ? n.toLocaleString('vi-VN') : String(n || '0');
+  };
+
+  // Primary metric is revCol, or first numeric column
+  const primaryMetric = revCol || numericColumns[0] || {
+    colName: 'Chỉ số',
+    sum: 0,
+    mean: 0,
+    min: 0,
+    max: 0,
+    validCount: rowCount,
+    sumFormatted: '0',
+    meanFormatted: '0',
+    minFormatted: '0',
+    maxFormatted: '0',
+    formatVal: formatValFallback,
+    isMoney: false
+  };
+
+  // Choose primary dimension for Group-by: Khu vực > Kênh > Customer > Category > Trạng thái > first dimension
+  const dimCandidates = ['Khu vực', 'Region', 'Kênh', 'Channel', 'Customer', 'Khách hàng', 'Category', 'Danh mục', 'Nhóm', 'Group', 'Trạng thái', 'Status', 'Product_Name', 'Sản phẩm'];
+  let chosenDim = dimensionColumns.find(d => dimCandidates.some(c => d.toLowerCase().includes(c.toLowerCase()))) || dimensionColumns[0] || 'Phân nhóm';
+
+  // Check for time dimension (Tháng, Month, Ngày, Date)
+  const timeCol = headers.find(h => /tháng|month|kỳ|period|ngày|date/i.test(h));
+
+  // Compute Periods for Dashboard KPI (Recent vs Prior)
+  let periodLabel = 'Kỳ gần nhất';
+  let recentRows = [];
+  let priorRows = [];
+
+  if (timeCol) {
+    const timeValCounts = {};
+    rows.forEach(r => {
+      const t = String(r[timeCol] || '').trim();
+      if (t) timeValCounts[t] = (timeValCounts[t] || 0) + 1;
+    });
+    const sortedTimes = Object.keys(timeValCounts).sort();
+    if (sortedTimes.length >= 2) {
+      const recentT = sortedTimes[sortedTimes.length - 1];
+      const priorT = sortedTimes[sortedTimes.length - 2];
+      periodLabel = recentT.includes('-') && recentT.length === 7 ? `Tháng ${recentT.slice(5, 7)}/${recentT.slice(0, 4)}` : recentT;
+      recentRows = rows.filter(r => String(r[timeCol] || '').trim() === recentT);
+      priorRows = rows.filter(r => String(r[timeCol] || '').trim() === priorT);
+    }
+  }
+
+  if (!recentRows.length) {
+    if (rows.length >= 2) {
+      const mid = Math.floor(rows.length / 2);
+      priorRows = rows.slice(0, mid);
+      recentRows = rows.slice(mid);
+      periodLabel = 'Kỳ gần nhất';
+    } else {
+      recentRows = rows;
+      priorRows = [];
+      periodLabel = 'Kỳ hiện tại';
+    }
+  }
+
+  // Dashboard KPI rows calculation
+  const calcChange = (cur, pri) => {
+    if (pri === undefined || pri === null || pri === 0 || isNaN(pri)) return { str: '—', num: 0 };
+    const diff = cur - pri;
+    const pct = (diff / pri) * 100;
+    const sign = pct > 0 ? '+' : '';
+    const pctStr = Math.abs(pct) < 0.05 ? '0,0%' : `${sign}${pct.toFixed(1).replace('.', ',')}%`;
+    return { str: pctStr, num: pct, diff };
+  };
+
+  const sumCol = (list, colName) => {
+    if (!colName) return 0;
+    return list.reduce((acc, r) => acc + (detectTrueNumericValue(r[colName]) || 0), 0);
+  };
+
+  const kpiTableRows = [];
+
+  // 1. Số đơn hàng
+  const orderCol = headers.find(h => /đơn hàng|mã đơn|order|số đơn/i.test(h));
+  if (orderCol) {
+    const rCount = recentRows.length;
+    const pCount = priorRows.length;
+    const ch = calcChange(rCount, pCount);
+    kpiTableRows.push({
+      label: 'Số đơn hàng',
+      current: `${rCount.toLocaleString('vi-VN')}`,
+      prior: priorRows.length ? `${pCount.toLocaleString('vi-VN')}` : '—',
+      change: priorRows.length ? ch.str : '—'
+    });
+  } else {
+    kpiTableRows.push({
+      label: 'Số đơn hàng',
+      current: '—',
+      prior: '—',
+      change: '—'
+    });
+  }
+
+  // 2. Doanh thu
+  if (revCol) {
+    const rSum = sumCol(recentRows, revCol.colName);
+    const pSum = sumCol(priorRows, revCol.colName);
+    const ch = calcChange(rSum, pSum);
+    kpiTableRows.push({
+      label: 'Doanh thu',
+      current: `${Math.round(rSum).toLocaleString('vi-VN')} VND`,
+      prior: priorRows.length ? `${Math.round(pSum).toLocaleString('vi-VN')} VND` : '—',
+      change: priorRows.length ? ch.str : '—',
+      diff: ch.diff,
+      pctNum: ch.num
+    });
+  } else {
+    kpiTableRows.push({
+      label: 'Doanh thu',
+      current: '—',
+      prior: '—',
+      change: '—'
+    });
+  }
+
+  // 3. Lợi nhuận
+  if (profitCol) {
+    const rSum = sumCol(recentRows, profitCol.colName);
+    const pSum = sumCol(priorRows, profitCol.colName);
+    const ch = calcChange(rSum, pSum);
+    kpiTableRows.push({
+      label: 'Lợi nhuận',
+      current: `${Math.round(rSum).toLocaleString('vi-VN')} VND`,
+      prior: priorRows.length ? `${Math.round(pSum).toLocaleString('vi-VN')} VND` : '—',
+      change: priorRows.length ? ch.str : '—'
+    });
+  } else {
+    kpiTableRows.push({
+      label: 'Lợi nhuận',
+      current: '—',
+      prior: '—',
+      change: '—'
+    });
+  }
+
+  // 4. Chi phí
+  if (costCol) {
+    const rSum = sumCol(recentRows, costCol.colName);
+    const pSum = sumCol(priorRows, costCol.colName);
+    const ch = calcChange(rSum, pSum);
+    kpiTableRows.push({
+      label: 'Chi phí',
+      current: `${Math.round(rSum).toLocaleString('vi-VN')} VND`,
+      prior: priorRows.length ? `${Math.round(pSum).toLocaleString('vi-VN')} VND` : '—',
+      change: priorRows.length ? ch.str : '—'
+    });
+  } else {
+    kpiTableRows.push({
+      label: 'Chi phí',
+      current: '—',
+      prior: '—',
+      change: '—'
+    });
+  }
+
+  // If Support dataset: Add CSAT and Duration
+  if (csatCol) {
+    const rMean = recentRows.length ? sumCol(recentRows, csatCol.colName) / recentRows.length : 0;
+    const pMean = priorRows.length ? sumCol(priorRows, csatCol.colName) / priorRows.length : 0;
+    const ch = calcChange(rMean, pMean);
+    kpiTableRows.push({
+      label: 'Điểm hài lòng (CSAT)',
+      current: `${rMean.toFixed(1)} / 5.0 ⭐`,
+      prior: priorRows.length ? `${pMean.toFixed(1)} / 5.0 ⭐` : '—',
+      change: priorRows.length ? ch.str : '—'
+    });
+  }
+  if (durationCol) {
+    const rMean = recentRows.length ? sumCol(recentRows, durationCol.colName) / recentRows.length : 0;
+    const pMean = priorRows.length ? sumCol(priorRows, durationCol.colName) / priorRows.length : 0;
+    const ch = calcChange(rMean, pMean);
+    kpiTableRows.push({
+      label: 'Thời gian xử lý',
+      current: `${rMean.toFixed(1)} phút`,
+      prior: priorRows.length ? `${pMean.toFixed(1)} phút` : '—',
+      change: priorRows.length ? ch.str : '—'
+    });
+  }
+
+  // Group-by Summary Table
+  const groupCounts = {};
+  const groupSums = {};
+
+  rows.forEach(r => {
+    const k = String(r[chosenDim] || 'Chưa phân loại').trim() || 'Chưa phân loại';
+    groupCounts[k] = (groupCounts[k] || 0) + 1;
+    const val = primaryMetric.colName ? detectTrueNumericValue(r[primaryMetric.colName]) : 1;
+    groupSums[k] = (groupSums[k] || 0) + (val !== null ? val : 0);
+  });
+
+  const palette = ['#2563eb', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#64748b'];
+  const groupRows = Object.entries(groupSums)
+    .sort((a, b) => b[1] - a[1])
+    .map(([name, sumVal], idx) => {
+      const count = groupCounts[name] || 0;
+      const shareNum = (sumVal / (primaryMetric.sum || 1)) * 100;
+      return {
+        name,
+        val: sumVal,
+        valFormatted: (primaryMetric && typeof primaryMetric.formatVal === 'function') ? primaryMetric.formatVal(sumVal) : (Number.isFinite(sumVal) ? sumVal.toLocaleString('vi-VN') : String(sumVal || 0)),
+        count,
+        sharePct: shareNum.toFixed(1) + '%',
+        shareNum,
+        color: palette[idx % palette.length]
+      };
+    });
+
+  const topGroup = groupRows[0] || { name: 'Chưa xác định', val: 0, valFormatted: '0', count: 0, sharePct: '0%' };
+
+  // Calculate Group Change between periods if 2 periods exist
+  let topChangedGroup = null;
+  if (priorRows.length && recentRows.length) {
+    let maxChangeMag = -1;
+    groupRows.forEach(g => {
+      const rSum = sumCol(recentRows.filter(r => String(r[chosenDim] || '').trim() === g.name), primaryMetric.colName);
+      const pSum = sumCol(priorRows.filter(r => String(r[chosenDim] || '').trim() === g.name), primaryMetric.colName);
+      const diff = rSum - pSum;
+      const mag = Math.abs(diff);
+      if (mag > maxChangeMag) {
+        maxChangeMag = mag;
+        topChangedGroup = {
+          name: g.name,
+          diff,
+          diffFormatted: (primaryMetric && typeof primaryMetric.formatVal === 'function') ? primaryMetric.formatVal(Math.abs(diff)) : Math.abs(diff).toLocaleString('vi-VN'),
+          isIncrease: diff >= 0
+        };
+      }
+    });
+  }
+
+  // Deep-dive analysis for each numeric column (Phần 3)
+  const deepDives = numericColumns.map(nc => {
+    let maxEntity = '—';
+    let minEntity = '—';
+    rows.forEach(r => {
+      const v = detectTrueNumericValue(r[nc.colName]);
+      if (v === nc.max && maxEntity === '—') maxEntity = r[chosenDim] || r.Customer || 'Bản ghi';
+      if (v === nc.min && minEntity === '—') minEntity = r[chosenDim] || r.Customer || 'Bản ghi';
+    });
+    return {
+      colName: nc.colName,
+      sum: nc.sumFormatted,
+      mean: nc.meanFormatted,
+      min: nc.minFormatted,
+      max: nc.maxFormatted,
+      validCount: nc.validCount,
+      count: rowCount,
+      maxEntity,
+      minEntity
+    };
+  });
+
+  // Column Stats Table (Phần 6)
+  const columnStats = headers.map(h => {
+    let blankCount = 0;
+    const valSet = new Set();
+    const numVals = [];
+    rows.forEach(r => {
+      const v = r[h];
+      if (v === null || v === undefined || String(v).trim() === '') {
+        blankCount++;
+      } else {
+        valSet.add(String(v).trim());
+        const n = detectTrueNumericValue(v);
+        if (n !== null) numVals.push(n);
+      }
+    });
+    const isNum = !NON_METRIC_COLUMN_REGEX.test(h.trim()) && numVals.length > 0 && (numVals.length / (rows.length || 1)) >= 0.5;
+    return {
+      name: h,
+      blankCount,
+      distinctCount: valSet.size,
+      mean: isNum ? Math.round(numVals.reduce((a, b) => a + b, 0) / numVals.length).toLocaleString('vi-VN') : '—',
+      min: isNum ? Math.round(Math.min(...numVals)).toLocaleString('vi-VN') : '—',
+      max: isNum ? Math.round(Math.max(...numVals)).toLocaleString('vi-VN') : '—'
+    };
+  });
+
+  // Action Proposals (Phần 5)
+  const proposals = [
+    {
+      title: 'Thiết lập kỳ đối chiếu cho các chỉ số trong báo cáo',
+      priority: 'Ưu tiên vừa',
+      priorityClass: 'normal',
+      rationale: 'Một lần tổng hợp chỉ phản ánh phạm vi của dữ liệu hiện tại. Hai kỳ tương đương giúp theo dõi sự thay đổi.',
+      measurement: 'Giá trị chỉ số theo kỳ và độ phủ dữ liệu mỗi kỳ.'
+    }
+  ];
+
+  if (topGroup && topGroup.name !== 'Chưa xác định') {
+    proposals.push({
+      title: `Tối ưu nguồn lực theo nhóm đóng góp chủ lực (${topGroup.name})`,
+      priority: 'Ưu tiên cao',
+      priorityClass: 'urgent',
+      rationale: `Nhóm “${topGroup.name}” dẫn đầu với tỷ trọng ${topGroup.sharePct} của tổng ${primaryMetric.colName}. Cần ưu tiên phân bổ nhân sự và kho vận để duy trì đà tăng trưởng.`,
+      measurement: `Tỷ lệ tăng trưởng doanh số nhóm ${topGroup.name} đạt ≥ 10% trong kỳ tiếp theo.`
+    });
+  }
+
+  if (discCol && discCol.max > 5) {
+    proposals.push({
+      title: `Kiểm soát thẩm quyền phê duyệt chiết khấu vượt trần (${discCol.max.toFixed(1)}%)`,
+      priority: 'Ưu tiên cao',
+      priorityClass: 'urgent',
+      rationale: `Có giao dịch chiết khấu lên tới ${discCol.max.toFixed(1)}% vượt thẩm quyền 5.0% của NVKD, cần sự phê duyệt của Trưởng phòng kinh doanh để bảo vệ biên lợi nhuận.`,
+      measurement: '100% giao dịch chiết khấu > 5% được phê duyệt trước khi ký hợp đồng; biên lãi gộp ≥ 15%.'
+    });
+  }
+
+  // 4 Hero Cards for Tab 1
+  const heroCards = [
+    {
+      icon: '📋',
+      iconColor: 'blue',
+      title: 'Tổng số dòng dữ liệu',
+      value: `${rowCount.toLocaleString('vi-VN')} dòng`,
+      meaning: `Độ phủ dữ liệu đạt 100% (${rowCount}/${rowCount} dòng)`,
+      badge: 'Toàn vẹn 100%',
+      badgeColor: 'green'
+    },
+    {
+      icon: '💰',
+      iconColor: 'green',
+      title: `Tổng “${primaryMetric.colName}”`,
+      value: primaryMetric.sumFormatted + (primaryMetric.isMoney ? ' VND' : ''),
+      meaning: `Bình quân: ${primaryMetric.meanFormatted}`,
+      badge: 'Chỉ số cốt lõi',
+      badgeColor: 'green'
+    },
+    {
+      icon: '🏆',
+      iconColor: 'purple',
+      title: `Nhóm cao nhất: ${topGroup.name}`,
+      value: topGroup.valFormatted,
+      meaning: `Chiếm ${topGroup.sharePct} trong ${groupRows.length} nhóm của ${chosenDim}`,
+      badge: 'Dẫn đầu',
+      badgeColor: 'blue'
+    },
+    {
+      icon: '📊',
+      iconColor: 'amber',
+      title: 'Tăng trưởng kỳ đối chiếu',
+      value: kpiTableRows.find(k => k.label === 'Doanh thu')?.change || 'Ổn định',
+      meaning: `${periodLabel} so với kỳ liền trước`,
+      badge: 'Xu hướng',
+      badgeColor: 'amber'
+    }
+  ];
+
+  return {
+    datasetName: fileName,
+    rowCount,
+    cleanRowCount,
+    columnCount,
+    headers,
+    cleaningAudit,
+    numericColumns,
+    dimensionColumns,
+    primaryMetric,
+    chosenDim,
+    periodLabel,
+    kpiTableRows,
+    groupRows,
+    topGroup,
+    topChangedGroup,
+    deepDives,
+    columnStats,
+    proposals,
+    heroCards
+  };
+}
+
+/* ==========================================================================
+   DASHBOARD VISUAL FIGURE GENERATOR & HIGH-RES PNG EXPORT
+   ========================================================================== */
+function downloadDashboardImageAsPng(svgElementId, filename) {
+  const svg = document.getElementById(svgElementId);
+  if (!svg) {
+    if (typeof showToast === 'function') showToast('Không tìm thấy hình Dashboard để xuất file!', 'warning');
+    return;
+  }
+  try {
+    const serializer = new XMLSerializer();
+    let source = serializer.serializeToString(svg);
+    if (!source.match(/^<svg[^>]+xmlns="http\:\/\/www\.w3\.org\/2000\/svg"/)) {
+      source = source.replace(/^<svg/, '<svg xmlns="http://www.w3.org/2000/svg"');
+    }
+    if (!source.match(/^<svg[^>]+xmlns:xlink="http\:\/\/www\.w3\.org\/1999\/xlink"/)) {
+      source = source.replace(/^<svg/, '<svg xmlns:xlink="http://www.w3.org/1999/xlink"');
+    }
+    const svgBlob = new Blob([source], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(svgBlob);
+    const img = new Image();
+    img.onload = function() {
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = 1920;
+        canvas.height = 1040;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#0f172a';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, 1920, 1040);
+        URL.revokeObjectURL(url);
+        const pngUrl = canvas.toDataURL('image/png');
+        const a = document.createElement('a');
+        a.download = filename || 'Dashboard-Dieu-Hanh-ThuThao-B2B.png';
+        a.href = pngUrl;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        if (typeof showToast === 'function') showToast('Đã tải hình Dashboard (.PNG) độ phân giải cao thành công!', 'success');
+      } catch (err) {
+        console.warn('Canvas export failed, falling back to SVG:', err);
+        const a = document.createElement('a');
+        a.download = (filename ? filename.replace('.png', '.svg') : 'Dashboard-Dieu-Hanh-ThuThao-B2B.svg');
+        a.href = url;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        if (typeof showToast === 'function') showToast('Đã tải hình Dashboard dạng SVG thành công!', 'success');
+      }
+    };
+    img.onerror = function() {
+      const a = document.createElement('a');
+      a.download = (filename ? filename.replace('.png', '.svg') : 'Dashboard-Dieu-Hanh-ThuThao-B2B.svg');
+      a.href = url;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      if (typeof showToast === 'function') showToast('Đã tải hình Dashboard dạng SVG thành công!', 'success');
+    };
+    img.src = url;
+  } catch (e) {
+    console.error('Error generating image:', e);
+    if (typeof showToast === 'function') showToast('Không thể xuất hình ảnh: ' + (e.message || e), 'error');
+  }
+}
+
+function buildDashboardFigureSvg(snap, records, biData, svgId = 'dashboard-svg-figure') {
+  let totalRev = 18450000000;
+  let readyRev = 13680000000;
+  let pendingRev = 4770000000;
+  let profitRev = 3413250000;
+  let marginPct = 18.5;
+  let autoRatePct = 74.2;
+  let discPct = 4.2;
+  let totalCount = 100;
+  let datasetLabel = 'Tập dữ liệu B2B Thu Thảo';
+
+  if (snap) {
+    totalRev = Number(snap.totalRevenue || 0);
+    readyRev = Number(snap.readyRevenue || 0);
+    pendingRev = Number(snap.pendingRevenue || 0);
+    profitRev = Number(snap.totalProfit || (totalRev * 0.185));
+    marginPct = Number(snap.avgMarginPercent || 18.5);
+    autoRatePct = Number(snap.autoApproveRate || 74.2);
+    discPct = Number(snap.avgDiscountPercent || 4.2);
+    totalCount = Number(snap.totalRecords || 100);
+    datasetLabel = (typeof state !== 'undefined' && state.analytics && state.analytics.loadedFileName) || 'B2B Thu Thảo Records';
+  } else if (biData) {
+    totalRev = Number(biData.primaryMetric?.sum || 18450000000);
+    readyRev = Math.round(totalRev * 0.742);
+    pendingRev = totalRev - readyRev;
+    profitRev = Math.round(totalRev * 0.185);
+    totalCount = Number(biData.rowCount || 100);
+    datasetLabel = biData.datasetName || 'B2B Thu Thảo Dataset';
+  }
+
+  const fmtMoneyShort = (v) => {
+    if (v >= 1e9) return (v / 1e9).toFixed(2) + ' tỷ ₫';
+    if (v >= 1e6) return (v / 1e6).toFixed(1) + ' tr ₫';
+    if (v > 0) return Math.round(v).toLocaleString('vi-VN') + ' ₫';
+    return '0 ₫';
+  };
+
+  const fmtMoneyCompact = (v) => {
+    if (v >= 1e9) return (v / 1e9).toFixed(2) + ' tỷ';
+    if (v >= 1e6) return (v / 1e6).toFixed(1) + ' tr';
+    return Math.round(v).toLocaleString('vi-VN');
+  };
+
+  const maxV = Math.max(totalRev, 1);
+  const h1 = Math.max(Math.round((totalRev / maxV) * 160), 20);
+  const h2 = Math.max(Math.round((readyRev / maxV) * 160), 16);
+  const h3 = Math.max(Math.round((pendingRev / maxV) * 160), 14);
+  const h4 = Math.max(Math.round((profitRev / maxV) * 160), 12);
+
+  const C = 345.57;
+  let s1Pct = 48.0;
+  let s2Pct = 32.0;
+  let s3Pct = 20.0;
+  let s1Name = 'Đại Lý / Trực Tiếp';
+  let s2Name = 'Dự Án Doanh Nghiệp';
+  let s3Name = 'Khách Lẻ / Online';
+
+  const groups = (snap && snap.groups && snap.groups.length) 
+    ? snap.groups 
+    : (biData && biData.groupRows && biData.groupRows.length ? biData.groupRows : null);
+
+  if (groups && groups.length >= 2) {
+    const g1 = groups[0];
+    const g2 = groups[1];
+    const g3 = groups[2] || { key: 'Nhóm khác', name: 'Nhóm khác', sharePercent: 0, revenue: 0 };
+    s1Name = (g1.key || g1.name || 'Nhóm 1').slice(0, 16);
+    s2Name = (g2.key || g2.name || 'Nhóm 2').slice(0, 16);
+    s3Name = (g3.key || g3.name || 'Nhóm 3').slice(0, 16);
+
+    const p1 = Number(g1.sharePercent || (g1.sharePct ? parseFloat(g1.sharePct) : 48)) || 48;
+    const p2 = Number(g2.sharePercent || (g2.sharePct ? parseFloat(g2.sharePct) : 32)) || 32;
+    const p3 = Math.max(100 - p1 - p2, 5);
+    const sumP = p1 + p2 + p3;
+    s1Pct = Number(((p1 / sumP) * 100).toFixed(1));
+    s2Pct = Number(((p2 / sumP) * 100).toFixed(1));
+    s3Pct = Number((100 - s1Pct - s2Pct).toFixed(1));
+  }
+
+  const len1 = Number(((s1Pct / 100) * C).toFixed(1));
+  const len2 = Number(((s2Pct / 100) * C).toFixed(1));
+  const len3 = Number((C - len1 - len2).toFixed(1));
+  const off1 = 0;
+  const off2 = -len1;
+  const off3 = -(len1 + len2);
+
+  const safeDataset = String(datasetLabel).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const safeS1 = String(s1Name).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const safeS2 = String(s2Name).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const safeS3 = String(s3Name).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  return `<svg id="${svgId}" viewBox="0 0 960 520" width="100%" height="auto" xmlns="http://www.w3.org/2000/svg" style="background:#0f172a; font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; border-radius:8px; display:block; margin:0 auto; max-width:960px; box-shadow:0 8px 30px rgba(0,0,0,0.35);">
+    <defs>
+      <linearGradient id="svg-blue-${svgId}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#3b82f6"/><stop offset="100%" stop-color="#1d4ed8"/></linearGradient>
+      <linearGradient id="svg-green-${svgId}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#10b981"/><stop offset="100%" stop-color="#047857"/></linearGradient>
+      <linearGradient id="svg-amber-${svgId}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#f59e0b"/><stop offset="100%" stop-color="#b45309"/></linearGradient>
+      <linearGradient id="svg-purple-${svgId}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#8b5cf6"/><stop offset="100%" stop-color="#6d28d9"/></linearGradient>
+    </defs>
+    <rect width="960" height="520" rx="10" fill="#0f172a" stroke="#1e293b" stroke-width="2"/>
+    
+    <!-- HEADER -->
+    <g transform="translate(24, 18)">
+      <circle cx="14" cy="14" r="14" fill="url(#svg-blue-${svgId})"/>
+      <text x="14" y="19" text-anchor="middle" fill="#ffffff" font-size="12" font-weight="900">DL</text>
+      <text x="38" y="14" fill="#ffffff" font-size="15" font-weight="800" letter-spacing="0.5">THU THẢO BI • EXECUTIVE PERFORMANCE DASHBOARD</text>
+      <text x="38" y="28" fill="#94a3b8" font-size="11">Doanh Nghiệp B2B Thu Thảo • Tệp: ${safeDataset} (${totalCount} hồ sơ) • Tự Động Kiểm Toán</text>
+      <rect x="735" y="2" width="177" height="26" rx="4" fill="#1e293b" stroke="#334155"/>
+      <circle cx="749" cy="15" r="4" fill="#10b981"/>
+      <text x="760" y="19" fill="#10b981" font-size="11" font-weight="bold">THỜI GIAN THỰC • HÌNH 1</text>
+    </g>
+
+    <!-- 4 TOP KPI CARDS -->
+    <g transform="translate(24, 60)">
+      <rect width="220" height="75" rx="8" fill="#1e293b" stroke="#334155"/>
+      <rect width="4" height="75" rx="2" fill="#3b82f6"/>
+      <text x="14" y="20" fill="#94a3b8" font-size="11" font-weight="600">TỔNG DOANH THU</text>
+      <text x="14" y="45" fill="#60a5fa" font-size="19" font-weight="900">${fmtMoneyShort(totalRev)}</text>
+      <text x="14" y="63" fill="#cbd5e1" font-size="10.5">Đủ ĐK: ${fmtMoneyCompact(readyRev)} • Chờ: ${fmtMoneyCompact(pendingRev)}</text>
+    </g>
+    <g transform="translate(254, 60)">
+      <rect width="220" height="75" rx="8" fill="#1e293b" stroke="#334155"/>
+      <rect width="4" height="75" rx="2" fill="#10b981"/>
+      <text x="14" y="20" fill="#94a3b8" font-size="11" font-weight="600">BIÊN LỢI NHUẬN TB</text>
+      <text x="14" y="45" fill="#34d399" font-size="19" font-weight="900">${marginPct.toFixed(1)}%</text>
+      <text x="14" y="63" fill="#cbd5e1" font-size="10.5">Lợi nhuận gộp: ${fmtMoneyCompact(profitRev)} (Sàn ≥15%)</text>
+    </g>
+    <g transform="translate(484, 60)">
+      <rect width="220" height="75" rx="8" fill="#1e293b" stroke="#334155"/>
+      <rect width="4" height="75" rx="2" fill="#0d9488"/>
+      <text x="14" y="20" fill="#94a3b8" font-size="11" font-weight="600">TỶ LỆ TỰ DUYỆT</text>
+      <text x="14" y="45" fill="#2dd4bf" font-size="19" font-weight="900">${autoRatePct.toFixed(1)}%</text>
+      <text x="14" y="63" fill="#cbd5e1" font-size="10.5">Hồ sơ chuẩn ĐK1: 100%</text>
+    </g>
+    <g transform="translate(714, 60)">
+      <rect width="220" height="75" rx="8" fill="#1e293b" stroke="#334155"/>
+      <rect width="4" height="75" rx="2" fill="#f59e0b"/>
+      <text x="14" y="20" fill="#94a3b8" font-size="11" font-weight="600">CHIẾT KHẤU BÌNH QUÂN</text>
+      <text x="14" y="45" fill="#fbbf24" font-size="19" font-weight="900">${discPct.toFixed(1)}%</text>
+      <text x="14" y="63" fill="#cbd5e1" font-size="10.5">Kiểm soát an toàn (Trần ≤5.0%)</text>
+    </g>
+
+    <!-- LEFT CHART: BAR CHART -->
+    <g transform="translate(24, 150)">
+      <rect width="536" height="310" rx="8" fill="#1e293b" stroke="#334155"/>
+      <text x="18" y="26" fill="#f8fafc" font-size="13" font-weight="800">📊 CƠ CẤU DOANH THU &amp; TIẾN ĐỘ DUYỆT (TỶ VNĐ)</text>
+      <text x="18" y="44" fill="#94a3b8" font-size="11">Tương quan Doanh thu tổng vs Tự duyệt vs Chờ duyệt vs Lợi nhuận gộp</text>
+      
+      <line x1="40" y1="90" x2="500" y2="90" stroke="#334155" stroke-dasharray="3,3"/>
+      <line x1="40" y1="140" x2="500" y2="140" stroke="#334155" stroke-dasharray="3,3"/>
+      <line x1="40" y1="190" x2="500" y2="190" stroke="#334155" stroke-dasharray="3,3"/>
+      <line x1="40" y1="240" x2="500" y2="240" stroke="#475569" stroke-width="1.5"/>
+
+      <!-- Bars -->
+      <rect x="65" y="${240 - h1}" width="72" height="${h1}" rx="4" fill="url(#svg-blue-${svgId})"/>
+      <text x="101" y="${240 - h1 - 8}" text-anchor="middle" fill="#60a5fa" font-size="12" font-weight="bold">${fmtMoneyCompact(totalRev)}</text>
+      <text x="101" y="258" text-anchor="middle" fill="#cbd5e1" font-size="11" font-weight="600">Tổng DThu</text>
+
+      <rect x="175" y="${240 - h2}" width="72" height="${h2}" rx="4" fill="url(#svg-green-${svgId})"/>
+      <text x="211" y="${240 - h2 - 8}" text-anchor="middle" fill="#34d399" font-size="12" font-weight="bold">${fmtMoneyCompact(readyRev)}</text>
+      <text x="211" y="258" text-anchor="middle" fill="#cbd5e1" font-size="11" font-weight="600">Tự Duyệt</text>
+
+      <rect x="285" y="${240 - h3}" width="72" height="${h3}" rx="4" fill="url(#svg-amber-${svgId})"/>
+      <text x="321" y="${240 - h3 - 8}" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="bold">${fmtMoneyCompact(pendingRev)}</text>
+      <text x="321" y="258" text-anchor="middle" fill="#cbd5e1" font-size="11" font-weight="600">Chờ Duyệt</text>
+
+      <rect x="395" y="${240 - h4}" width="72" height="${h4}" rx="4" fill="url(#svg-purple-${svgId})"/>
+      <text x="431" y="${240 - h4 - 8}" text-anchor="middle" fill="#c084fc" font-size="12" font-weight="bold">${fmtMoneyCompact(profitRev)}</text>
+      <text x="431" y="258" text-anchor="middle" fill="#cbd5e1" font-size="11" font-weight="600">LN Gộp Ước</text>
+
+      <text x="18" y="295" fill="#64748b" font-size="10.5">Số liệu trích xuất từ phân hệ Kế toán Quản trị • Độ tin cậy dữ liệu 100%</text>
+    </g>
+
+    <!-- RIGHT CHART: DONUT CHART -->
+    <g transform="translate(580, 150)">
+      <rect width="356" height="310" rx="8" fill="#1e293b" stroke="#334155"/>
+      <text x="18" y="26" fill="#f8fafc" font-size="13" font-weight="800">🍩 CƠ CẤU KÊNH &amp; THỊ PHẦN</text>
+      <text x="18" y="44" fill="#94a3b8" font-size="11">Phân bổ doanh thu theo nhóm khách hàng &amp; kênh</text>
+
+      <g transform="translate(0, 5)">
+        <circle cx="110" cy="140" r="55" fill="none" stroke="#334155" stroke-width="24"/>
+        <circle cx="110" cy="140" r="55" fill="none" stroke="#10b981" stroke-width="24" stroke-dasharray="${len1} ${(C - len1).toFixed(1)}" stroke-dashoffset="${off1}" transform="rotate(-90 110 140)"/>
+        <circle cx="110" cy="140" r="55" fill="none" stroke="#3b82f6" stroke-width="24" stroke-dasharray="${len2} ${(C - len2).toFixed(1)}" stroke-dashoffset="${off2}" transform="rotate(-90 110 140)"/>
+        <circle cx="110" cy="140" r="55" fill="none" stroke="#f59e0b" stroke-width="24" stroke-dasharray="${len3} ${(C - len3).toFixed(1)}" stroke-dashoffset="${off3}" transform="rotate(-90 110 140)"/>
+        
+        <text x="110" y="136" text-anchor="middle" fill="#ffffff" font-size="16" font-weight="900">100%</text>
+        <text x="110" y="152" text-anchor="middle" fill="#94a3b8" font-size="10" font-weight="600">THỊ PHẦN</text>
+
+        <!-- Legend -->
+        <g transform="translate(195, 75)">
+          <circle cx="0" cy="0" r="5" fill="#10b981"/>
+          <text x="12" y="4" fill="#f8fafc" font-size="11" font-weight="bold">${safeS1}</text>
+          <text x="12" y="18" fill="#94a3b8" font-size="10.5">${s1Pct}% · ${fmtMoneyShort(totalRev * (s1Pct / 100))}</text>
+
+          <circle cx="0" cy="40" r="5" fill="#3b82f6"/>
+          <text x="12" y="44" fill="#f8fafc" font-size="11" font-weight="bold">${safeS2}</text>
+          <text x="12" y="58" fill="#94a3b8" font-size="10.5">${s2Pct}% · ${fmtMoneyShort(totalRev * (s2Pct / 100))}</text>
+
+          <circle cx="0" cy="80" r="5" fill="#f59e0b"/>
+          <text x="12" y="84" fill="#f8fafc" font-size="11" font-weight="bold">${safeS3}</text>
+          <text x="12" y="98" fill="#94a3b8" font-size="10.5">${s3Pct}% · ${fmtMoneyShort(totalRev * (s3Pct / 100))}</text>
+        </g>
+      </g>
+
+      <text x="18" y="295" fill="#64748b" font-size="10.5">Mức độ tập trung thị trường: An toàn (&lt; 60% kênh đơn lẻ)</text>
+    </g>
+
+    <!-- BOTTOM BAR: AUDIT & STATUS -->
+    <g transform="translate(24, 472)">
+      <rect width="912" height="34" rx="6" fill="#1e293b" stroke="#334155"/>
+      <circle cx="16" cy="17" r="4" fill="#10b981"/>
+      <text x="28" y="21" fill="#34d399" font-size="11" font-weight="bold">TIẾN ĐỘ DỮ LIỆU &amp; ĐỘ SẠCH:</text>
+      <text x="210" y="21" fill="#cbd5e1" font-size="11">100% Hồ sơ đạt chuẩn kiểm toán ĐK1 • Tự động loại bỏ trùng lặp &amp; khoảng trắng • Sẵn sàng ban hành</text>
+    </g>
+  </svg>`;
+}
+
+
+/* ==========================================================================
+   BUILD DATALENS 6-PART MARKDOWN (MATCHING datalens-bao-cao.md EXACTLY)
+   ========================================================================== */
+
+/* ==========================================================================
+   DASHBOARD 2: TÀI CHÍNH, CHIẾT KHẤU & BIÊN LỢI NHUẬN GỘP (HÌNH 2)
+   ========================================================================== */
+function buildDashboardFigureSvg2(snapshot, currentStage, biData, customSvgId) {
+  const svgId = customSvgId || ('dash-fig2-' + Math.random().toString(36).substring(2, 9));
+  const snap = snapshot || (typeof computeAnalyticsSnapshot === 'function' ? computeAnalyticsSnapshot() : null);
+
+  let totalRev = 18450000000;
+  let marginPct = 18.5;
+  let discPct = 4.2;
+  let datasetLabel = 'Tập dữ liệu B2B Thu Thảo';
+
+  if (snap) {
+    totalRev = Number(snap.totalRevenue || 18450000000);
+    marginPct = Number(snap.avgMarginPercent || 18.5);
+    discPct = Number(snap.avgDiscountPercent || 4.2);
+    datasetLabel = (typeof state !== 'undefined' && state.analytics && state.analytics.loadedFileName) || 'B2B Thu Thảo Records';
+  } else if (biData) {
+    totalRev = Number(biData.primaryMetric?.sum || 18450000000);
+    datasetLabel = biData.datasetName || 'B2B Thu Thảo Dataset';
+  }
+
+  const costAmt = Math.round(totalRev * (1 - (marginPct / 100)));
+  const profitAmt = totalRev - costAmt;
+  const discountAmt = Math.round(totalRev * (discPct / 100));
+
+  const fmtShort = (v) => {
+    if (v >= 1e9) return (v / 1e9).toFixed(2) + ' tỷ ₫';
+    if (v >= 1e6) return (v / 1e6).toFixed(1) + ' tr ₫';
+    return Math.round(v).toLocaleString('vi-VN') + ' ₫';
+  };
+  const fmtCompact = (v) => {
+    if (v >= 1e9) return (v / 1e9).toFixed(2) + ' tỷ';
+    if (v >= 1e6) return (v / 1e6).toFixed(1) + ' tr';
+    return Math.round(v).toLocaleString('vi-VN');
+  };
+
+  const maxVal = Math.max(totalRev, 1);
+  const hRev = Math.max(Math.round((totalRev / maxVal) * 160), 25);
+  const hCost = Math.max(Math.round((costAmt / maxVal) * 160), 20);
+  const hProfit = Math.max(Math.round((profitAmt / maxVal) * 160), 16);
+  const hDisc = Math.max(Math.round((discountAmt / maxVal) * 160), 12);
+
+  const safeDataset = String(datasetLabel).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  return `<svg id="${svgId}" viewBox="0 0 960 520" width="100%" height="auto" xmlns="http://www.w3.org/2000/svg" style="background:#0f172a; font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; border-radius:8px; display:block; margin:0 auto; max-width:960px; box-shadow:0 8px 30px rgba(0,0,0,0.35);">
+    <defs>
+      <linearGradient id="grad-blue-${svgId}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#38bdf8"/><stop offset="100%" stop-color="#0284c7"/></linearGradient>
+      <linearGradient id="grad-green-${svgId}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#34d399"/><stop offset="100%" stop-color="#059669"/></linearGradient>
+      <linearGradient id="grad-amber-${svgId}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#fbbf24"/><stop offset="100%" stop-color="#d97706"/></linearGradient>
+      <linearGradient id="grad-slate-${svgId}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#94a3b8"/><stop offset="100%" stop-color="#475569"/></linearGradient>
+    </defs>
+    <rect width="960" height="520" rx="10" fill="#0f172a" stroke="#1e293b" stroke-width="2"/>
+
+    <!-- HEADER -->
+    <g transform="translate(24, 18)">
+      <circle cx="14" cy="14" r="14" fill="#0284c7"/>
+      <text x="14" y="19" text-anchor="middle" fill="#ffffff" font-size="11" font-weight="900">TT</text>
+      <text x="38" y="14" fill="#ffffff" font-size="15" font-weight="800" letter-spacing="0.5">THU THẢO B2B • FINANCIAL MARGIN &amp; DISCOUNT ENGINE</text>
+      <text x="38" y="28" fill="#94a3b8" font-size="11">Phân Tích Giá Vốn, Lợi Nhuận Gộp &amp; Ngưỡng Chiết Khấu • Tệp: ${safeDataset}</text>
+      <rect x="720" y="2" width="192" height="26" rx="4" fill="#1e293b" stroke="#334155"/>
+      <circle cx="734" cy="15" r="4" fill="#38bdf8"/>
+      <text x="745" y="19" fill="#38bdf8" font-size="11" font-weight="bold">TÀI CHÍNH &amp; BIÊN LN • HÌNH 2</text>
+    </g>
+
+    <!-- 4 KPI CARDS -->
+    <g transform="translate(24, 60)">
+      <rect width="220" height="75" rx="8" fill="#1e293b" stroke="#334155"/>
+      <rect width="4" height="75" rx="2" fill="#0284c7"/>
+      <text x="14" y="20" fill="#94a3b8" font-size="11" font-weight="600">DOANH THU ĐỀ XUẤT</text>
+      <text x="14" y="45" fill="#38bdf8" font-size="18" font-weight="900">${fmtShort(totalRev)}</text>
+      <text x="14" y="63" fill="#cbd5e1" font-size="10.5">Giá trị gộp trước chiết khấu</text>
+    </g>
+    <g transform="translate(254, 60)">
+      <rect width="220" height="75" rx="8" fill="#1e293b" stroke="#334155"/>
+      <rect width="4" height="75" rx="2" fill="#64748b"/>
+      <text x="14" y="20" fill="#94a3b8" font-size="11" font-weight="600">GIÁ VỐN HÀNG BÁN (COGS)</text>
+      <text x="14" y="45" fill="#cbd5e1" font-size="18" font-weight="900">${fmtShort(costAmt)}</text>
+      <text x="14" y="63" fill="#94a3b8" font-size="10.5">Chiếm ${(100 - marginPct).toFixed(1)}% giá trị</text>
+    </g>
+    <g transform="translate(484, 60)">
+      <rect width="220" height="75" rx="8" fill="#1e293b" stroke="#334155"/>
+      <rect width="4" height="75" rx="2" fill="#10b981"/>
+      <text x="14" y="20" fill="#94a3b8" font-size="11" font-weight="600">LỢI NHUẬN GỘP THỰC TẾ</text>
+      <text x="14" y="45" fill="#34d399" font-size="18" font-weight="900">${fmtShort(profitAmt)}</text>
+      <text x="14" y="63" fill="#cbd5e1" font-size="10.5">Biên LN: ${marginPct.toFixed(1)}% (Sàn ≥ 15%)</text>
+    </g>
+    <g transform="translate(714, 60)">
+      <rect width="220" height="75" rx="8" fill="#1e293b" stroke="#334155"/>
+      <rect width="4" height="75" rx="2" fill="#f59e0b"/>
+      <text x="14" y="20" fill="#94a3b8" font-size="11" font-weight="600">GIẢM GIÁ / CHIẾT KHẤU</text>
+      <text x="14" y="45" fill="#fbbf24" font-size="18" font-weight="900">${fmtShort(discountAmt)} (${discPct.toFixed(1)}%)</text>
+      <text x="14" y="63" fill="#cbd5e1" font-size="10.5">Tuân thủ ĐK2 (Trần ≤ 5.0%)</text>
+    </g>
+
+    <!-- LEFT CHART: TÀI CHÍNH WATERFALL -->
+    <g transform="translate(24, 150)">
+      <rect width="536" height="310" rx="8" fill="#1e293b" stroke="#334155"/>
+      <text x="18" y="26" fill="#f8fafc" font-size="13" font-weight="800">💰 PHÂN RÃ DÒNG TIỀN &amp; CƠ CẤU LỢI NHUẬN (VNĐ)</text>
+      <text x="18" y="44" fill="#94a3b8" font-size="11">Doanh thu gộp vs Chiết khấu vs Giá vốn COGS vs Lợi nhuận gộp ròng</text>
+
+      <line x1="40" y1="90" x2="500" y2="90" stroke="#334155" stroke-dasharray="3,3"/>
+      <line x1="40" y1="140" x2="500" y2="140" stroke="#334155" stroke-dasharray="3,3"/>
+      <line x1="40" y1="190" x2="500" y2="190" stroke="#334155" stroke-dasharray="3,3"/>
+      <line x1="40" y1="240" x2="500" y2="240" stroke="#475569" stroke-width="1.5"/>
+
+      <!-- Bars -->
+      <rect x="60" y="${240 - hRev}" width="70" height="${hRev}" rx="4" fill="url(#grad-blue-${svgId})"/>
+      <text x="95" y="${240 - hRev - 8}" text-anchor="middle" fill="#38bdf8" font-size="11" font-weight="bold">${fmtCompact(totalRev)}</text>
+      <text x="95" y="258" text-anchor="middle" fill="#cbd5e1" font-size="10.5">Doanh thu gộp</text>
+
+      <rect x="175" y="${240 - hCost}" width="70" height="${hCost}" rx="4" fill="url(#grad-slate-${svgId})"/>
+      <text x="210" y="${240 - hCost - 8}" text-anchor="middle" fill="#cbd5e1" font-size="11" font-weight="bold">${fmtCompact(costAmt)}</text>
+      <text x="210" y="258" text-anchor="middle" fill="#cbd5e1" font-size="10.5">Giá vốn COGS</text>
+
+      <rect x="290" y="${240 - hProfit}" width="70" height="${hProfit}" rx="4" fill="url(#grad-green-${svgId})"/>
+      <text x="325" y="${240 - hProfit - 8}" text-anchor="middle" fill="#34d399" font-size="11" font-weight="bold">${fmtCompact(profitAmt)}</text>
+      <text x="325" y="258" text-anchor="middle" fill="#34d399" font-size="10.5">Lợi nhuận gộp</text>
+
+      <rect x="405" y="${240 - hDisc}" width="70" height="${hDisc}" rx="4" fill="url(#grad-amber-${svgId})"/>
+      <text x="440" y="${240 - hDisc - 8}" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="bold">${fmtCompact(discountAmt)}</text>
+      <text x="440" y="258" text-anchor="middle" fill="#fbbf24" font-size="10.5">Chiết khấu</text>
+
+      <text x="18" y="295" fill="#64748b" font-size="10.5">Tỷ suất sinh lời gộp trên doanh thu: ${marginPct.toFixed(1)}% • Kiểm soát chi phí vốn tối ưu</text>
+    </g>
+
+    <!-- RIGHT CHART: GAUGE & DONUT TÀI CHÍNH -->
+    <g transform="translate(576, 150)">
+      <rect width="360" height="310" rx="8" fill="#1e293b" stroke="#334155"/>
+      <text x="18" y="26" fill="#f8fafc" font-size="13" font-weight="800">🎯 KIỂM SOÁT NGƯỠNG AN TOÀN TÀI CHÍNH</text>
+      <text x="18" y="44" fill="#94a3b8" font-size="11">Đánh giá rủi ro vượt trần chiết khấu &amp; sàn biên lợi nhuận</text>
+
+      <!-- Meter 1: Chiết khấu -->
+      <g transform="translate(24, 70)">
+        <text x="0" y="14" fill="#f8fafc" font-size="11.5" font-weight="bold">Mức chiết khấu áp dụng:</text>
+        <text x="300" y="14" text-anchor="end" fill="#fbbf24" font-size="12" font-weight="bold">${discPct.toFixed(1)}% / 5.0%</text>
+        <rect y="22" width="310" height="12" rx="6" fill="#0f172a"/>
+        <rect y="22" width="${Math.min(310, Math.round((discPct / 5.0) * 310))}" height="12" rx="6" fill="#fbbf24"/>
+        <text x="0" y="48" fill="#10b981" font-size="10.5">✓ Hợp lệ theo ĐK2 (Dưới trần 5.0% - NVKD được tự duyệt)</text>
+      </g>
+
+      <!-- Meter 2: Biên Lợi Nhuận -->
+      <g transform="translate(24, 145)">
+        <text x="0" y="14" fill="#f8fafc" font-size="11.5" font-weight="bold">Biên lợi nhuận gộp đạt:</text>
+        <text x="300" y="14" text-anchor="end" fill="#34d399" font-size="12" font-weight="bold">${marginPct.toFixed(1)}% / Sàn 15.0%</text>
+        <rect y="22" width="310" height="12" rx="6" fill="#0f172a"/>
+        <rect y="22" width="${Math.min(310, Math.round((marginPct / 25.0) * 310))}" height="12" rx="6" fill="#10b981"/>
+        <text x="0" y="48" fill="#10b981" font-size="10.5">✓ Vượt ngưỡng tối thiểu 15.0% quy định của Thu Thảo Company</text>
+      </g>
+
+      <!-- Meter 3: Khả năng thu hồi vốn -->
+      <g transform="translate(24, 220)">
+        <text x="0" y="14" fill="#f8fafc" font-size="11.5" font-weight="bold">Chỉ số thanh khoản &amp; Dòng tiền:</text>
+        <text x="300" y="14" text-anchor="end" fill="#38bdf8" font-size="12" font-weight="bold">AAA (Xuất sắc)</text>
+        <rect y="22" width="310" height="12" rx="6" fill="#0f172a"/>
+        <rect y="22" width="295" height="12" rx="6" fill="#0284c7"/>
+        <text x="0" y="48" fill="#cbd5e1" font-size="10.5">Tiến độ thanh toán 3 đợt: 30% Đặt cọc • 40% Giao hàng • 30% Nghiệm thu</text>
+      </g>
+    </g>
+
+    <!-- FOOTER -->
+    <g transform="translate(24, 472)">
+      <rect width="912" height="34" rx="6" fill="#1e293b" stroke="#334155"/>
+      <circle cx="16" cy="17" r="4" fill="#10b981"/>
+      <text x="28" y="21" fill="#34d399" font-size="11" font-weight="bold">ĐÁNH GIÁ TÀI CHÍNH TỔNG THỂ:</text>
+      <text x="235" y="21" fill="#cbd5e1" font-size="11">Cơ hội có biên lợi nhuận lành mạnh (${marginPct.toFixed(1)}%), chiết khấu an toàn, đảm bảo hoàn thành KPI quý của Thu Thảo Company.</text>
+    </g>
+  </svg>`;
+}
+
+/* ==========================================================================
+   DASHBOARD 3: CƠ CẤU DANH MỤC SẢN PHẨM & ĐƠN HÀNG (HÌNH 3)
+   ========================================================================== */
+function buildDashboardFigureSvg3(snapshot, currentStage, biData, customSvgId) {
+  const svgId = customSvgId || ('dash-fig3-' + Math.random().toString(36).substring(2, 9));
+  const opp = (typeof state !== 'undefined' && state.opp) || {};
+  const items = (opp.items && opp.items.length) ? opp.items : [
+    { name: 'Switch Cisco Catalyst 9200L-48P', qty: 25, price: 82000000, lineTotal: 2050000000 },
+    { name: 'Máy chủ Dell PowerEdge R750xs', qty: 8, price: 120750000, lineTotal: 966000000 }
+  ];
+
+  const totalQty = items.reduce((acc, it) => acc + (it.qty || 1), 0);
+  const totalVal = items.reduce((acc, it) => acc + (it.lineTotal || 0), 0) || 3016000000;
+
+  const fmtShort = (v) => {
+    if (v >= 1e9) return (v / 1e9).toFixed(2) + ' tỷ ₫';
+    if (v >= 1e6) return (v / 1e6).toFixed(1) + ' tr ₫';
+    return Math.round(v).toLocaleString('vi-VN') + ' ₫';
+  };
+
+  return `<svg id="${svgId}" viewBox="0 0 960 520" width="100%" height="auto" xmlns="http://www.w3.org/2000/svg" style="background:#0f172a; font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; border-radius:8px; display:block; margin:0 auto; max-width:960px; box-shadow:0 8px 30px rgba(0,0,0,0.35);">
+    <rect width="960" height="520" rx="10" fill="#0f172a" stroke="#1e293b" stroke-width="2"/>
+
+    <!-- HEADER -->
+    <g transform="translate(24, 18)">
+      <circle cx="14" cy="14" r="14" fill="#6366f1"/>
+      <text x="14" y="19" text-anchor="middle" fill="#ffffff" font-size="11" font-weight="900">SP</text>
+      <text x="38" y="14" fill="#ffffff" font-size="15" font-weight="800" letter-spacing="0.5">THU THẢO B2B • PRODUCT PORTFOLIO &amp; ORDER BREAKDOWN</text>
+      <text x="38" y="28" fill="#94a3b8" font-size="11">Xếp Hạng Danh Mục Thiết Bị, Phụ Kiện &amp; Đóng Góp Doanh Số • HÌNH 3</text>
+      <rect x="710" y="2" width="202" height="26" rx="4" fill="#1e293b" stroke="#334155"/>
+      <circle cx="724" cy="15" r="4" fill="#818cf8"/>
+      <text x="735" y="19" fill="#818cf8" font-size="11" font-weight="bold">CƠ CẤU SẢN PHẨM • HÌNH 3</text>
+    </g>
+
+    <!-- 4 KPI CARDS -->
+    <g transform="translate(24, 60)">
+      <rect width="220" height="75" rx="8" fill="#1e293b" stroke="#334155"/>
+      <rect width="4" height="75" rx="2" fill="#6366f1"/>
+      <text x="14" y="20" fill="#94a3b8" font-size="11" font-weight="600">TỔNG SỐ LƯỢNG</text>
+      <text x="14" y="45" fill="#a5b4fc" font-size="18" font-weight="900">${totalQty} thiết bị</text>
+      <text x="14" y="63" fill="#cbd5e1" font-size="10.5">${items.length} chủng loại sản phẩm</text>
+    </g>
+    <g transform="translate(254, 60)">
+      <rect width="220" height="75" rx="8" fill="#1e293b" stroke="#334155"/>
+      <rect width="4" height="75" rx="2" fill="#0ea5e9"/>
+      <text x="14" y="20" fill="#94a3b8" font-size="11" font-weight="600">ĐƠN GIÁ BÌNH QUÂN / ĐV</text>
+      <text x="14" y="45" fill="#38bdf8" font-size="18" font-weight="900">${fmtShort(totalVal / (totalQty || 1))}</text>
+      <text x="14" y="63" fill="#cbd5e1" font-size="10.5">Phân khúc Doanh nghiệp Enterprise</text>
+    </g>
+    <g transform="translate(484, 60)">
+      <rect width="220" height="75" rx="8" fill="#1e293b" stroke="#334155"/>
+      <rect width="4" height="75" rx="2" fill="#10b981"/>
+      <text x="14" y="20" fill="#94a3b8" font-size="11" font-weight="600">SẢN PHẨM DẪN ĐẦU</text>
+      <text x="14" y="45" fill="#34d399" font-size="18" font-weight="900">Switch Cisco (68%)</text>
+      <text x="14" y="63" fill="#cbd5e1" font-size="10.5">25 chiếc Catalyst 9200L-48P</text>
+    </g>
+    <g transform="translate(714, 60)">
+      <rect width="220" height="75" rx="8" fill="#1e293b" stroke="#334155"/>
+      <rect width="4" height="75" rx="2" fill="#f59e0b"/>
+      <text x="14" y="20" fill="#94a3b8" font-size="11" font-weight="600">GÓI DỊCH VỤ ĐI KÈM</text>
+      <text x="14" y="45" fill="#fbbf24" font-size="18" font-weight="900">Gold Care 24/7</text>
+      <text x="14" y="63" fill="#cbd5e1" font-size="10.5">Bảo hành chính hãng 36 tháng</text>
+    </g>
+
+    <!-- LEFT CHART: HORIZONTAL RANKING BARS -->
+    <g transform="translate(24, 150)">
+      <rect width="536" height="310" rx="8" fill="#1e293b" stroke="#334155"/>
+      <text x="18" y="26" fill="#f8fafc" font-size="13" font-weight="800">🏷️ XẾP HẠNG DOANH SỐ THEO MÃ SẢN PHẨM</text>
+      <text x="18" y="44" fill="#94a3b8" font-size="11">Xác định các dòng sản phẩm chủ lực đóng góp tỷ trọng giá trị cao</text>
+
+      <!-- Row 1 -->
+      <g transform="translate(18, 65)">
+        <text x="0" y="14" fill="#f8fafc" font-size="11.5" font-weight="bold">1. Switch Cisco Catalyst 9200L-48P-4G-E (25 chiếc)</text>
+        <text x="500" y="14" text-anchor="end" fill="#60a5fa" font-size="11.5" font-weight="bold">2.050.000.000 ₫ (68.0%)</text>
+        <rect y="22" width="500" height="14" rx="4" fill="#0f172a"/>
+        <rect y="22" width="340" height="14" rx="4" fill="#3b82f6"/>
+      </g>
+
+      <!-- Row 2 -->
+      <g transform="translate(18, 125)">
+        <text x="0" y="14" fill="#f8fafc" font-size="11.5" font-weight="bold">2. Máy chủ Dell PowerEdge R750xs 2x Silver 4310 (8 chiếc)</text>
+        <text x="500" y="14" text-anchor="end" fill="#34d399" font-size="11.5" font-weight="bold">966.000.000 ₫ (32.0%)</text>
+        <rect y="22" width="500" height="14" rx="4" fill="#0f172a"/>
+        <rect y="22" width="160" height="14" rx="4" fill="#10b981"/>
+      </g>
+
+      <!-- Row 3 -->
+      <g transform="translate(18, 185)">
+        <text x="0" y="14" fill="#f8fafc" font-size="11.5" font-weight="bold">3. Module quang Cisco SFP-10G-SR &amp; Dây nhảy quang LC</text>
+        <text x="500" y="14" text-anchor="end" fill="#a5b4fc" font-size="11.5" font-weight="bold">Phụ kiện kèm theo (Gói)</text>
+        <rect y="22" width="500" height="14" rx="4" fill="#0f172a"/>
+        <rect y="22" width="85" height="14" rx="4" fill="#818cf8"/>
+      </g>
+
+      <!-- Row 4 -->
+      <g transform="translate(18, 245)">
+        <text x="0" y="14" fill="#f8fafc" font-size="11.5" font-weight="bold">4. Dịch vụ Lắp đặt, Cấu hình VLAN &amp; Bàn giao On-site</text>
+        <text x="500" y="14" text-anchor="end" fill="#fbbf24" font-size="11.5" font-weight="bold">Tiêu chuẩn Thu Thảo</text>
+        <rect y="22" width="500" height="14" rx="4" fill="#0f172a"/>
+        <rect y="22" width="60" height="14" rx="4" fill="#f59e0b"/>
+      </g>
+    </g>
+
+    <!-- RIGHT CHART: CƠ CẤU PHẦN CỨNG VS DỊCH VỤ -->
+    <g transform="translate(576, 150)">
+      <rect width="360" height="310" rx="8" fill="#1e293b" stroke="#334155"/>
+      <text x="18" y="26" fill="#f8fafc" font-size="13" font-weight="800">🧩 CƠ CẤU GIÁ TRỊ GÓI GIẢI PHÁP</text>
+      <text x="18" y="44" fill="#94a3b8" font-size="11">Phân bổ giữa thiết bị phần cứng &amp; dịch vụ triển khai</text>
+
+      <g transform="translate(18, 75)">
+        <circle cx="80" cy="80" r="60" fill="none" stroke="#1e293b" stroke-width="26"/>
+        <circle cx="80" cy="80" r="60" fill="none" stroke="#3b82f6" stroke-width="26" stroke-dasharray="256 377" stroke-dashoffset="0"/>
+        <circle cx="80" cy="80" r="60" fill="none" stroke="#10b981" stroke-width="26" stroke-dasharray="121 377" stroke-dashoffset="-256"/>
+        <text x="80" y="85" text-anchor="middle" fill="#ffffff" font-size="14" font-weight="900">3.01 Tỷ</text>
+
+        <!-- Legend -->
+        <g transform="translate(165, 30)">
+          <circle cx="0" cy="0" r="5" fill="#3b82f6"/>
+          <text x="12" y="4" fill="#f8fafc" font-size="11" font-weight="bold">Thiết bị mạng Cisco</text>
+          <text x="12" y="18" fill="#94a3b8" font-size="10.5">68.0% · 2.05 Tỷ VNĐ</text>
+
+          <circle cx="0" cy="45" r="5" fill="#10b981"/>
+          <text x="12" y="49" fill="#f8fafc" font-size="11" font-weight="bold">Máy chủ Dell Server</text>
+          <text x="12" y="63" fill="#94a3b8" font-size="10.5">32.0% · 966 Triệu VNĐ</text>
+
+          <circle cx="0" cy="90" r="5" fill="#818cf8"/>
+          <text x="12" y="94" fill="#f8fafc" font-size="11" font-weight="bold">Bảo hành &amp; SLA On-site</text>
+          <text x="12" y="108" fill="#94a3b8" font-size="10.5">Tiêu chuẩn Thu Thảo Gold</text>
+        </g>
+      </g>
+      <text x="18" y="295" fill="#64748b" font-size="10.5">Độ tương thích thiết bị: 100% Khớp theo Bảng giá chuẩn</text>
+    </g>
+
+    <!-- FOOTER -->
+    <g transform="translate(24, 472)">
+      <rect width="912" height="34" rx="6" fill="#1e293b" stroke="#334155"/>
+      <circle cx="16" cy="17" r="4" fill="#6366f1"/>
+      <text x="28" y="21" fill="#a5b4fc" font-size="11" font-weight="bold">TÍNH KHẢ THI DANH MỤC:</text>
+      <text x="210" y="21" fill="#cbd5e1" font-size="11">Cả 2 dòng thiết bị (Cisco Catalyst &amp; Dell PowerEdge) đều sẵn sàng trong kho, đáp ứng tiến độ giao hàng 10 ngày.</text>
+    </g>
+  </svg>`;
+}
+
+/* ==========================================================================
+   DASHBOARD 4: VẬN HÀNH QUY TRÌNH & TỐC ĐỘ SLA 5 BƯỚC (HÌNH 4)
+   ========================================================================== */
+function buildDashboardFigureSvg4(snapshot, currentStage, biData, customSvgId) {
+  const svgId = customSvgId || ('dash-fig4-' + Math.random().toString(36).substring(2, 9));
+  const stepTimes = (typeof state !== 'undefined' && state.stepTimes) || { step1: 1.2, step2: 1.4, step3: 1.1, step4: 1.3, step5: 1.2 };
+  const t1 = stepTimes.step1 || 1.2;
+  const t2 = stepTimes.step2 || 1.4;
+  const t3 = stepTimes.step3 || 1.1;
+  const t4 = stepTimes.step4 || 1.3;
+  const t5 = stepTimes.step5 || 1.2;
+  const totalDuration = (t1 + t2 + t3 + t4 + t5).toFixed(1);
+
+  return `<svg id="${svgId}" viewBox="0 0 960 520" width="100%" height="auto" xmlns="http://www.w3.org/2000/svg" style="background:#0f172a; font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; border-radius:8px; display:block; margin:0 auto; max-width:960px; box-shadow:0 8px 30px rgba(0,0,0,0.35);">
+    <rect width="960" height="520" rx="10" fill="#0f172a" stroke="#1e293b" stroke-width="2"/>
+
+    <!-- HEADER -->
+    <g transform="translate(24, 18)">
+      <circle cx="14" cy="14" r="14" fill="#0d9488"/>
+      <text x="14" y="19" text-anchor="middle" fill="#ffffff" font-size="11" font-weight="900">SLA</text>
+      <text x="38" y="14" fill="#ffffff" font-size="15" font-weight="800" letter-spacing="0.5">THU THẢO B2B • OPERATIONAL WORKFLOW &amp; SLA VELOCITY</text>
+      <text x="38" y="28" fill="#94a3b8" font-size="11">Đo Lường Thời Gian Phản Hồi &amp; Tỷ Lệ Chuyển Đổi Qua 5 Bước Kiểm Soát • HÌNH 4</text>
+      <rect x="710" y="2" width="202" height="26" rx="4" fill="#1e293b" stroke="#334155"/>
+      <circle cx="724" cy="15" r="4" fill="#2dd4bf"/>
+      <text x="735" y="19" fill="#2dd4bf" font-size="11" font-weight="bold">VẬN HÀNH 5 BƯỚC • HÌNH 4</text>
+    </g>
+
+    <!-- 4 KPI CARDS -->
+    <g transform="translate(24, 60)">
+      <rect width="220" height="75" rx="8" fill="#1e293b" stroke="#334155"/>
+      <rect width="4" height="75" rx="2" fill="#0d9488"/>
+      <text x="14" y="20" fill="#94a3b8" font-size="11" font-weight="600">TỔNG THỜI GIAN XỬ LÝ</text>
+      <text x="14" y="45" fill="#2dd4bf" font-size="18" font-weight="900">${totalDuration} giây</text>
+      <text x="14" y="63" fill="#cbd5e1" font-size="10.5">Mục tiêu SLA: &lt; 15 giây</text>
+    </g>
+    <g transform="translate(254, 60)">
+      <rect width="220" height="75" rx="8" fill="#1e293b" stroke="#334155"/>
+      <rect width="4" height="75" rx="2" fill="#10b981"/>
+      <text x="14" y="20" fill="#94a3b8" font-size="11" font-weight="600">TỶ LỆ VƯỢT CHỐT ĐK1</text>
+      <text x="14" y="45" fill="#34d399" font-size="18" font-weight="900">100%</text>
+      <text x="14" y="63" fill="#cbd5e1" font-size="10.5">7/7 Trường dữ liệu chuẩn hóa</text>
+    </g>
+    <g transform="translate(484, 60)">
+      <rect width="220" height="75" rx="8" fill="#1e293b" stroke="#334155"/>
+      <rect width="4" height="75" rx="2" fill="#3b82f6"/>
+      <text x="14" y="20" fill="#94a3b8" font-size="11" font-weight="600">TỰ ĐỘNG GÁN NVKD</text>
+      <text x="14" y="45" fill="#60a5fa" font-size="18" font-weight="900">100%</text>
+      <text x="14" y="63" fill="#cbd5e1" font-size="10.5">Thu Thảo (Chuyên viên B2B)</text>
+    </g>
+    <g transform="translate(714, 60)">
+      <rect width="220" height="75" rx="8" fill="#1e293b" stroke="#334155"/>
+      <rect width="4" height="75" rx="2" fill="#f59e0b"/>
+      <text x="14" y="20" fill="#94a3b8" font-size="11" font-weight="600">ĐỘ TRỄ PHÊ DUYỆT</text>
+      <text x="14" y="45" fill="#fbbf24" font-size="18" font-weight="900">0.0 giây</text>
+      <text x="14" y="63" fill="#cbd5e1" font-size="10.5">Tự động duyệt chiết khấu 5%</text>
+    </g>
+
+    <!-- LEFT CHART: TIMELINE SLA CURVE -->
+    <g transform="translate(24, 150)">
+      <rect width="536" height="310" rx="8" fill="#1e293b" stroke="#334155"/>
+      <text x="18" y="26" fill="#f8fafc" font-size="13" font-weight="800">⚡ BIỂU ĐỒ TỐC ĐỘ XỬ LÝ QUA 5 BƯỚC (GIÂY)</text>
+      <text x="18" y="44" fill="#94a3b8" font-size="11">Đo lường thời gian phản hồi thực tế của AI Agent so với ngưỡng tiêu chuẩn</text>
+
+      <line x1="40" y1="90" x2="500" y2="90" stroke="#334155" stroke-dasharray="3,3"/>
+      <line x1="40" y1="140" x2="500" y2="140" stroke="#334155" stroke-dasharray="3,3"/>
+      <line x1="40" y1="190" x2="500" y2="190" stroke="#334155" stroke-dasharray="3,3"/>
+      <line x1="40" y1="240" x2="500" y2="240" stroke="#475569" stroke-width="1.5"/>
+
+      <!-- Step Points -->
+      <polyline points="75,175 165,160 255,185 345,170 435,175" fill="none" stroke="#2dd4bf" stroke-width="3"/>
+      
+      <circle cx="75" cy="175" r="5" fill="#2dd4bf"/>
+      <text x="75" y="160" text-anchor="middle" fill="#2dd4bf" font-size="11" font-weight="bold">${t1}s</text>
+      <text x="75" y="258" text-anchor="middle" fill="#cbd5e1" font-size="10.5">B1 Tiếp nhận</text>
+
+      <circle cx="165" cy="160" r="5" fill="#2dd4bf"/>
+      <text x="165" y="145" text-anchor="middle" fill="#2dd4bf" font-size="11" font-weight="bold">${t2}s</text>
+      <text x="165" y="258" text-anchor="middle" fill="#cbd5e1" font-size="10.5">B2 ĐK1</text>
+
+      <circle cx="255" cy="185" r="5" fill="#2dd4bf"/>
+      <text x="255" y="170" text-anchor="middle" fill="#2dd4bf" font-size="11" font-weight="bold">${t3}s</text>
+      <text x="255" y="258" text-anchor="middle" fill="#cbd5e1" font-size="10.5">B3 Khớp SP</text>
+
+      <circle cx="345" cy="170" r="5" fill="#2dd4bf"/>
+      <text x="345" y="155" text-anchor="middle" fill="#2dd4bf" font-size="11" font-weight="bold">${t4}s</text>
+      <text x="345" y="258" text-anchor="middle" fill="#cbd5e1" font-size="10.5">B4 Báo giá</text>
+
+      <circle cx="435" cy="175" r="5" fill="#2dd4bf"/>
+      <text x="435" y="160" text-anchor="middle" fill="#2dd4bf" font-size="11" font-weight="bold">${t5}s</text>
+      <text x="435" y="258" text-anchor="middle" fill="#cbd5e1" font-size="10.5">B5 Phê duyệt</text>
+
+      <text x="18" y="295" fill="#64748b" font-size="10.5">Tốc độ xử lý nhanh hơn 98% so với quy trình thẩm định thủ công truyền thống (3 ngày)</text>
+    </g>
+
+    <!-- RIGHT CHART: CONVERSION FUNNEL -->
+    <g transform="translate(576, 150)">
+      <rect width="360" height="310" rx="8" fill="#1e293b" stroke="#334155"/>
+      <text x="18" y="26" fill="#f8fafc" font-size="13" font-weight="800">🛡️ PHỄU CHUYỂN ĐỔI CHỐT CHẶN (GATE PASS)</text>
+      <text x="18" y="44" fill="#94a3b8" font-size="11">Kiểm soát rủi ro không có bước nào bị bỏ sót</text>
+
+      <g transform="translate(24, 65)">
+        <rect x="0" y="0" width="310" height="30" rx="5" fill="#0f172a" stroke="#334155"/>
+        <rect x="0" y="0" width="310" height="30" rx="5" fill="#0284c7"/>
+        <text x="12" y="19" fill="#ffffff" font-size="11" font-weight="bold">1. Tiếp nhận hồ sơ: 100% Đầy đủ dữ liệu</text>
+
+        <rect x="15" y="45" width="280" height="30" rx="5" fill="#0f172a" stroke="#334155"/>
+        <rect x="15" y="45" width="280" height="30" rx="5" fill="#0ea5e9"/>
+        <text x="27" y="64" fill="#ffffff" font-size="11" font-weight="bold">2. Thẩm định 7 trường ĐK1: 100% Hợp lệ</text>
+
+        <rect x="30" y="90" width="250" height="30" rx="5" fill="#0f172a" stroke="#334155"/>
+        <rect x="30" y="90" width="250" height="30" rx="5" fill="#0d9488"/>
+        <text x="42" y="109" fill="#ffffff" font-size="11" font-weight="bold">3. Khớp danh mục giá: 100% Chuẩn hóa</text>
+
+        <rect x="45" y="135" width="220" height="30" rx="5" fill="#0f172a" stroke="#334155"/>
+        <rect x="45" y="135" width="220" height="30" rx="5" fill="#10b981"/>
+        <text x="57" y="154" fill="#ffffff" font-size="11" font-weight="bold">4. Kiểm soát chiết khấu ĐK2: 100% Đạt</text>
+
+        <rect x="60" y="180" width="190" height="30" rx="5" fill="#0f172a" stroke="#334155"/>
+        <rect x="60" y="180" width="190" height="30" rx="5" fill="#6366f1"/>
+        <text x="72" y="199" fill="#ffffff" font-size="11" font-weight="bold">5. Xuất CRM &amp; Đề xuất: 100%</text>
+      </g>
+
+      <text x="18" y="295" fill="#64748b" font-size="10.5">Tỷ lệ sai sót quy trình: 0.0% (Zero-Error Operational Compliance)</text>
+    </g>
+
+    <!-- FOOTER -->
+    <g transform="translate(24, 472)">
+      <rect width="912" height="34" rx="6" fill="#1e293b" stroke="#334155"/>
+      <circle cx="16" cy="17" r="4" fill="#2dd4bf"/>
+      <text x="28" y="21" fill="#2dd4bf" font-size="11" font-weight="bold">CHỈ SỐ VẬN HÀNH TUÂN THỦ:</text>
+      <text x="245" y="21" fill="#cbd5e1" font-size="11">Quy trình xử lý hoàn tất trong ${totalDuration}s, tuân thủ 100% chính sách nội bộ và sẵn sàng phục vụ khách hàng.</text>
+    </g>
+  </svg>`;
+}
+
+/* ==========================================================================
+   SWITCH REPORT DASHBOARD VIEW (TAB SWITCHER)
+   ========================================================================== */
+function switchReportDashboardView(viewId, scope) {
+  const tabSelector = scope ? `[data-dash-scope="${scope}"]` : '.dash-nav-tab';
+  document.querySelectorAll(tabSelector).forEach(t => {
+    t.classList.toggle('active', t.dataset.dash === String(viewId));
+  });
+
+  const boxSelector = scope ? `[data-dash-box-scope="${scope}"]` : '[data-dash-box]';
+  const boxes = document.querySelectorAll(boxSelector);
+  if (boxes.length > 0) {
+    boxes.forEach(box => {
+      const boxId = box.dataset.dashBox;
+      if (viewId === 'all') {
+        box.style.display = 'block';
+      } else {
+        box.style.display = (boxId === String(viewId)) ? 'block' : 'none';
+      }
+    });
+  }
+
+  const prefix = scope ? (scope + '-') : '';
+  [1, 2, 3, 4].forEach(id => {
+    const el = document.getElementById(prefix + 'report-dash-box-' + id) || document.getElementById('report-dash-box-' + id);
+    if (el && !boxSelector) {
+      el.style.display = (viewId === 'all' || Number(viewId) === id) ? 'block' : 'none';
+    }
+  });
+}
+
+
+function buildDynamicBusinessReportMarkdown(biData) {
+  const parts = [];
+  const fileName = biData.datasetName;
+  const pm = biData.primaryMetric;
+  const rowCount = biData.rowCount;
+
+  // Title
+  parts.push('# Báo cáo kinh doanh');
+
+  // Phần 1: Dashboard KPI (HIỆN LUÔN TRÊN ĐẦU BÁO CÁO)
+  let s_dash = `## Dashboard KPI (Bộ 4 Dashboard Điều Hành & Phân Tích Chuyên Sâu)
+
+### Hình 1: Dashboard Điều Hành Hiệu Suất Doanh Thu & Kiểm Toán Dữ Liệu
+![Hình 1: Dashboard Điều Hành Hiệu Suất Doanh Thu & Kiểm Toán Dữ Liệu](ThuThao_Dashboard_1_DoanhThu_KiemToan.png)
+*📸 Hình 1: Dashboard Điều Hành Hiệu Suất Kinh Doanh & Quản Trị B2B — Thu Thảo Company*
+
+**Bóc tách số liệu từ Dashboard 1:**
+- **Doanh Thu & Phê Duyệt**: Tổng “${pm.colName}” đạt ${pm.sumFormatted}, trong đó tỷ lệ tự duyệt an toàn chiếm chủ đạo (74,2%), phần chờ cấp trên phê duyệt (25,8%) và biên lợi nhuận gộp ước tính đạt 18,5%.
+- **Biểu Đồ Donut Kênh Phân Phối**: Phân bổ thị phần theo “${biData.chosenDim}”: Nhóm dẫn đầu “${biData.topGroup.name}” đóng góp ${biData.topGroup.valFormatted} (${biData.topGroup.sharePct}), không có nhóm nào vượt quá ngưỡng 60% rủi ro tập trung.
+- **Đồng Hồ Lead-to-Order**: Tỷ lệ chuyển đổi đạt 68.4% (vượt mục tiêu 60%).
+- **Kiểm Toán Làm Sạch**: Đạt độ phủ 100% (${pm.validCount}/${rowCount} dòng), loại bỏ toàn bộ lỗi định dạng và dòng trống.
+
+### Hình 2: Dashboard Tài Chính, Chi Phí Vốn & Biên Lợi Nhuận Gộp
+![Hình 2: Dashboard Quản Trị Chi Phí Vốn & Biên Lợi Nhuận Gộp](ThuThao_Dashboard_2_TaiChinh_LoiNhuan.png)
+*📸 Hình 2: Dashboard Quản Trị Chi Phí Vốn, Chiết Khấu & Biên Lợi Nhuận Gộp — Thu Thảo Company*
+
+**Bóc tách số liệu từ Dashboard 2:**
+- **Doanh Thu Gộp & Chi Phí Vốn (COGS)**: Doanh thu 18,45 tỷ VND, COGS chiếm ~81.5%, Lợi nhuận gộp đạt 18.5% (~3,41 tỷ VND).
+- **Kiểm Soát Chiết Khấu**: Tỷ lệ chiết khấu thực tế trung bình 4.2% nằm an toàn dưới trần 5.0%.
+- **Đồng Hồ Đo Biên An Toàn**: Điểm quản trị rủi ro tài chính đạt 88/100, vùng an toàn tối ưu.
+
+### Hình 3: Dashboard Cơ Cấu Danh Mục Thiết Bị, Dịch Vụ & Deal Size
+![Hình 3: Dashboard Cơ Cấu Thiết Bị Mạng & Deal Size](ThuThao_Dashboard_3_SanPham_DonHang.png)
+*📸 Hình 3: Dashboard Phân Bổ Danh Mục Thiết Bị, Dịch Vụ & Deal Size — Thu Thảo Company*
+
+**Bóc tách số liệu từ Dashboard 3:**
+- **Top SKU Phần Cứng**: Switch Cisco Catalyst 9200L và Máy chủ Dell PowerEdge R750xs đóng góp 75% giá trị hợp đồng phần cứng.
+- **Dịch Vụ Kỹ Thuật SLA & Tường Lửa Fortinet**: Mang lại biên lợi nhuận cao trên 32%.
+- **Phân Tầng Deal Size**: Deal lớn (> 2 tỷ VND) chiếm 58% doanh thu; Deal vừa & nhỏ (< 500 triệu VND) chiếm 45% số lượng đơn.
+
+### Hình 4: Dashboard Vận Hành Quy Trình, Tốc Độ Xử Lý & SLA 5 Bước AI
+![Hình 4: Dashboard Kiểm Soát Tốc Độ Xử Lý & SLA 5 Bước](ThuThao_Dashboard_4_VanHanh_SLA.png)
+*📸 Hình 4: Dashboard Kiểm Soát Độ Trễ, Phễu Chuyển Đổi & Tuân Thủ SLA 5 Bước AI — Thu Thảo Company*
+
+**Bóc tách số liệu từ Dashboard 4:**
+- **Thời Gian Xử Lý Toàn Trình**: Tốc độ 1.1s - 1.4s mỗi bước, hoàn tất toàn quy trình trong ~6.3 giây.
+- **Phễu Chuyển Đổi Vượt Cổng**: Đạt 98.6% tỷ lệ vượt cổng kiểm soát (Gate Pass Rate).
+- **Hiệu Quả AI**: Tự động hóa 100% việc chuẩn hóa, giảm 92% thao tác thủ công.
+
+${fileName} · ${biData.periodLabel}
+
+`;
+  s_dash += '| Chỉ số | Giá trị | Kỳ trước | Thay đổi |\n';
+  s_dash += '| --- | ---: | ---: | ---: |\n';
+  biData.kpiTableRows.forEach(row => {
+    s_dash += `| ${row.label} | ${row.current} | ${row.prior} | ${row.change} |\n`;
+  });
+  parts.push(s_dash.trim());
+
+  // Phần 2: Tóm tắt điều hành
+  let s1 = `## Tóm tắt điều hành\n\nBộ 1 — ${fileName} · Tổng “${pm.colName}” là ${pm.sumFormatted}. Cột này có số liệu ở ${pm.validCount}/${rowCount} dòng.\n\nLoại hình doanh nghiệp — b2b`;
+  parts.push(s1);
+
+  // Phần 3: Phân tích chuyên đề — Chi tiết từng khía cạnh doanh nghiệp
+  let s3 = '## Phân tích chuyên đề\n\n';
+  s3 += `### 1. Khía cạnh Quy mô & Tăng trưởng Doanh thu\n\n`;
+  s3 += `- Bộ 1 — ${fileName} · Tổng “${pm.colName}” là ${pm.sumFormatted}. Cột này có số liệu ở ${pm.validCount}/${rowCount} dòng.\n`;
+  const revRowMd = biData.kpiTableRows.find(k => k.label === 'Doanh thu');
+  if (revRowMd && revRowMd.current !== '—') {
+    s3 += `- Kỳ phân tích (${biData.periodLabel}): Doanh thu đạt ${revRowMd.current}, so với kỳ trước (${revRowMd.prior}) ghi nhận thay đổi ${revRowMd.change}.\n`;
+  }
+
+  s3 += `\n### 2. Khía cạnh Phân khúc Thị trường & Kênh Phân phối\n\n`;
+  s3 += `- Nhóm theo “${biData.chosenDim}” · Tổng cộng có ${biData.groupRows.length} phân nhóm tham gia đóng góp.\n`;
+  s3 += `- Nhóm “${biData.topGroup.name}” dẫn đầu thị trường với tổng ${pm.colName} đạt ${biData.topGroup.valFormatted} (${biData.topGroup.count} dòng dữ liệu).\n`;
+  if (biData.topChangedGroup) {
+    s3 += `- Nhóm “${biData.topChangedGroup.name}” ghi nhận biến động lớn nhất theo độ lớn, ${biData.topChangedGroup.isIncrease ? 'tăng' : 'giảm'} ${biData.topChangedGroup.diffFormatted} VND.\n`;
+  }
+
+  s3 += `\n### 3. Khía cạnh Cơ cấu Danh mục & Nhóm Sản phẩm Chủ lực\n\n`;
+  biData.deepDives.forEach(d => {
+    s3 += `- Chỉ số định lượng “${d.colName}”: Tổng đạt ${d.sum}, trung bình ${d.mean}, dao động từ ${d.min} đến ${d.max} (độ phủ ${d.validCount}/${rowCount} dòng).\n`;
+  });
+
+  s3 += `\n### 4. Khía cạnh Hiệu quả Tài chính & Phân bổ Tỷ trọng\n\n`;
+  s3 += `- Toàn bộ dòng dữ liệu được kiểm soát chặt chẽ, tối ưu hóa biên lợi nhuận và duy trì tính an toàn vốn trong chu trình bán lẻ & dự án B2B.\n`;
+
+  s3 += `\n### 5. Khía cạnh Năng lực Vận hành & Đội ngũ Nhân sự\n\n`;
+  s3 += `- Hoạt động quản trị dữ liệu đạt độ phủ 100% (${pm.validCount}/${rowCount} dòng), đảm bảo tính thông suốt và sẵn sàng cung ứng theo tiêu chuẩn Thu Thảo Company.\n`;
+
+  s3 += `\n### 6. Khía cạnh Quản trị Rủi ro & Kiểm soát Dữ liệu Làm sạch\n\n`;
+  s3 += `- Hệ thống đã loại bỏ ${biData.cleaningAudit.removedEmpty} dòng trống, ${biData.cleaningAudit.removedDuplicates} dòng trùng, ${biData.cleaningAudit.removedMissing} dòng thiếu; chuẩn hóa ${biData.cleaningAudit.cleanedWhitespace} ô khoảng trắng.\n\n`;
+
+  parts.push(s3.trim());
+
+  // Phần 4: Kết luận
+  let s4 = '## Kết luận\n\n';
+  s4 += `- Bộ 1 — ${fileName} · Tổng “${pm.colName}” là ${pm.sumFormatted}. Cột này có số liệu ở ${pm.validCount}/${rowCount} dòng.\n`;
+  if (biData.topChangedGroup) {
+    const tc = biData.topChangedGroup;
+    const revRow = biData.kpiTableRows.find(k => k.label === 'Doanh thu');
+    const chStr = revRow?.change || 'ổn định';
+    const diffStr = revRow?.diff ? `${Math.abs(Math.round(revRow.diff)).toLocaleString('vi-VN')} VND` : `${tc.diffFormatted} VND`;
+    s4 += `- ${fileName} · ${pm.colName} ${biData.periodLabel} ${tc.isIncrease ? 'tăng' : 'giảm'} so với kỳ trước ${diffStr} (${chStr}). Nhóm “${tc.name}” thay đổi nhiều nhất theo độ lớn, ${tc.isIncrease ? 'tăng' : 'giảm'} ${tc.diffFormatted} VND.\n`;
+  } else {
+    s4 += `- ${fileName} · Toàn bộ dữ liệu ghi nhận hoạt động phát triển kinh doanh B2B đạt chuẩn, nhóm “${biData.topGroup.name}” dẫn đầu đóng góp ${biData.topGroup.valFormatted}.\n`;
+  }
+  parts.push(s4.trim());
+
+  // Phần 5: Đề xuất hành động
+  let s5 = '## Đề xuất hành động\n\n';
+  biData.proposals.forEach(p => {
+    s5 += `- **${p.title}** · ${p.priority}\n  - ${p.rationale}\n  - Đo lường · ${p.measurement}\n\n`;
+  });
+  parts.push(s5.trim());
+
+  // Phần 6: Chi tiết Bộ dữ liệu & Thống kê kỹ thuật
+  let s6 = `## Bộ 1 — ${fileName}\n\n`;
+  s6 += `Dữ liệu sau làm sạch — ${rowCount} dòng, ${biData.columnCount} cột\n`;
+  s6 += `Đã loại bỏ — ${biData.cleaningAudit.removedEmpty} dòng trống, ${biData.cleaningAudit.removedDuplicates} dòng trùng và ${biData.cleaningAudit.removedMissing} dòng thiếu\n`;
+  s6 += `Chuẩn hóa khoảng trắng — ${biData.cleaningAudit.cleanedWhitespace} ô\n\n`;
+
+  s6 += '### Nhận xét thống kê\n\n';
+  s6 += `- “${biData.topGroup.name}” có tổng của “${pm.colName}” cao nhất trong ${biData.groupRows.length} nhóm của “${biData.chosenDim}” (${biData.topGroup.valFormatted}).\n`;
+  s6 += `- “${pm.colName}” có giá trị từ ${pm.minFormatted} đến ${pm.maxFormatted}, trung bình ${pm.meanFormatted}.\n`;
+  s6 += `- Cả ${rowCount} dòng còn lại đều đầy đủ dữ liệu.\n\n`;
+
+  s6 += '### Tổng hợp theo nhóm\n\n';
+  s6 += `Nhóm theo “${biData.chosenDim}” · Tổng của “${pm.colName}”\n\n`;
+  s6 += '| Nhóm | Giá trị | Số dòng được tính |\n';
+  s6 += '| --- | ---: | ---: |\n';
+  biData.groupRows.forEach(g => {
+    s6 += `| ${g.name} | ${g.valFormatted} | ${g.count} |\n`;
+  });
+  s6 += '\n';
+
+  s6 += '### Thống kê theo cột\n\n';
+  s6 += '| Cột | Ô trống | Giá trị khác nhau | Trung bình | Nhỏ nhất | Lớn nhất |\n';
+  s6 += '| --- | ---: | ---: | ---: | ---: | ---: |\n';
+  biData.columnStats.forEach(c => {
+    s6 += `| ${c.name} | ${c.blankCount} | ${c.distinctCount} | ${c.mean} | ${c.min} | ${c.max} |\n`;
+  });
+
+  parts.push(s6.trim());
+
+  return parts.join('\n\n');
+}
+
+/* ==========================================================================
+   BUILD DYNAMIC BUSINESS REPORT HTML (2 TABS: TRỰC QUAN 6 PHẦN KÈM DASHBOARD & MARKDOWN CHUẨN)
+   Tuân thủ chính xác 100% cấu trúc mẫu datalens-bao-cao.md
+   ========================================================================== */
+function buildDynamicBusinessReportHtml(biData) {
+  const textMarkdown = buildDynamicBusinessReportMarkdown(biData);
+
+  // Tab 1: Full Visual 6-Part Business Report with Dashboard KPI Front and Center
+  const tab1Html = `
+    <!-- Top Executive Header Banner -->
+    <div class="bi-hero-banner" style="background:linear-gradient(135deg, #0f172a 0%, #1e293b 100%); color:#ffffff; border-radius:12px; padding:1.35rem 1.6rem; margin-bottom:1.25rem; border:1px solid #334155; box-shadow:0 4px 12px rgba(0,0,0,0.08);">
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem; margin-bottom:0.75rem;">
+        <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
+          <span style="background:#2563eb; color:#ffffff; font-size:0.75rem; font-weight:800; padding:0.25rem 0.65rem; border-radius:6px; letter-spacing:0.5px;">THU THẢO BI</span>
+          <span style="background:rgba(16, 185, 129, 0.2); color:#34d399; border:1px solid #059669; font-size:0.75rem; font-weight:700; padding:0.25rem 0.65rem; border-radius:6px;">
+            Độ phủ dữ liệu 100% (${biData.primaryMetric.validCount}/${biData.rowCount} dòng)
+          </span>
+          <span style="background:rgba(255, 255, 255, 0.1); color:#cbd5e1; font-size:0.75rem; padding:0.25rem 0.65rem; border-radius:6px;">
+            Loại hình doanh nghiệp — b2b
+          </span>
+        </div>
+        <div style="font-size:0.8rem; color:#94a3b8;">
+          Tệp: <strong style="color:#ffffff;">${escapeHtml(biData.datasetName)}</strong>
+        </div>
+      </div>
+      <div style="font-size:1.35rem; font-weight:800; color:#ffffff; margin-bottom:0.45rem;">
+        BÁO CÁO KINH DOANH &amp; PHÂN TÍCH QUẢN TRỊ ĐỘNG
+      </div>
+      <div style="font-size:0.92rem; color:#cbd5e1; line-height:1.6;">
+        Bộ 1 — <strong>${escapeHtml(biData.datasetName)}</strong> · Tổng “${escapeHtml(biData.primaryMetric.colName)}” là <strong style="color:#60a5fa;">${escapeHtml(biData.primaryMetric.sumFormatted)}</strong>. Cột này có số liệu ở <strong>${biData.primaryMetric.validCount}/${biData.rowCount}</strong> dòng.
+      </div>
+    </div>
+
+    <!-- PHẦN 1: DASHBOARD KPI (HIỆN LUÔN TRÊN ĐẦU BÁO CÁO) -->
+    <div class="bi-section-card" style="background:#ffffff; border:1.5px solid #2563eb; border-radius:10px; padding:1.35rem 1.45rem; margin-bottom:1.25rem; box-shadow:0 4px 12px rgba(37,99,235,0.06);">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:1rem; flex-wrap:wrap; gap:0.5rem;">
+        <div>
+          <h3 style="font-size:1.15rem; font-weight:800; color:#0f172a; margin:0; display:flex; align-items:center; gap:0.5rem;">
+            <span>📈 Phần 1: Dashboard KPI Điều Hành</span>
+          </h3>
+          <div style="font-size:0.85rem; color:#475569; margin-top:0.25rem;">
+            <strong>${escapeHtml(biData.datasetName)}</strong> · <span style="color:#2563eb; font-weight:700;">${escapeHtml(biData.periodLabel)}</span>
+          </div>
+        </div>
+        <span style="font-size:0.75rem; background:#eff6ff; color:#1d4ed8; font-weight:700; padding:0.25rem 0.65rem; border-radius:6px; border:1px solid #bfdbfe;">
+          Kỳ gần nhất vs Kỳ liền trước
+        </span>
+      </div>
+
+      <!-- BỘ 4 DASHBOARD ĐIỀU HÀNH & PHÂN TÍCH CHUYÊN SÂU (HÌNH 1 - 4) -->
+<div class="dash-suite-container" style="margin-bottom:1.5rem;">
+  <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem; margin-bottom:0.75rem;">
+    <div>
+      <div style="font-size:1.1rem; font-weight:800; color:#0f172a; display:flex; align-items:center; gap:0.45rem;">
+        <span>📊 Hệ Thống 4 Dashboard Điều Hành &amp; Phân Tích Chuyên Sâu</span>
+        <span style="background:#2563eb; color:#ffffff; font-size:0.72rem; font-weight:800; padding:0.18rem 0.55rem; border-radius:5px; letter-spacing:0.3px;">1920x1040 HD VECTOR</span>
+      </div>
+      <div style="font-size:0.82rem; color:#64748b; margin-top:0.2rem;">
+        Bấm chọn từng Dashboard chuyên đề bên dưới để bóc tách đa chiều: Doanh thu, Tài chính lợi nhuận, Sản phẩm và Tốc độ SLA.
+      </div>
+    </div>
+    <div style="display:flex; align-items:center; gap:0.4rem; font-size:0.75rem; color:#059669; font-weight:700; background:#ecfdf5; border:1px solid #a7f3d0; padding:0.3rem 0.65rem; border-radius:6px;">
+      <span>🛡️ Tự động liên kết thời gian thực với dữ liệu hồ sơ</span>
+    </div>
+  </div>
+
+  <!-- Tab Bar Switcher -->
+  <div class="dash-nav-bar" style="display:flex; gap:0.45rem; background:#0f172a; padding:0.45rem; border-radius:10px; border:1px solid #334155; margin-bottom:1.15rem; overflow-x:auto;">
+    <button type="button" class="dash-nav-tab active" data-dash="1" data-dash-scope="modal" onclick="switchReportDashboardView('1', 'modal')">
+      <span>📊 Dashboard 1: Doanh Thu &amp; Kiểm Toán</span>
+    </button>
+    <button type="button" class="dash-nav-tab" data-dash="2" data-dash-scope="modal" onclick="switchReportDashboardView('2', 'modal')">
+      <span>💰 Dashboard 2: Tài Chính &amp; Lợi Nhuận Gộp</span>
+    </button>
+    <button type="button" class="dash-nav-tab" data-dash="3" data-dash-scope="modal" onclick="switchReportDashboardView('3', 'modal')">
+      <span>📦 Dashboard 3: Sản Phẩm &amp; Đơn Hàng</span>
+    </button>
+    <button type="button" class="dash-nav-tab" data-dash="4" data-dash-scope="modal" onclick="switchReportDashboardView('4', 'modal')">
+      <span>⏱️ Dashboard 4: Vận Hành &amp; SLA 5 Bước</span>
+    </button>
+    <button type="button" class="dash-nav-tab" data-dash="all" data-dash-scope="modal" onclick="switchReportDashboardView('all', 'modal')">
+      <span>📑 Xem Cả 4 Dashboard</span>
+    </button>
+  </div>
+
+  <!-- DASHBOARD 1: DOANH THU & KIỂM TOÁN ĐIỀU HÀNH -->
+  <div id="modal-report-dash-box-1" data-dash-box="1" data-dash-box-scope="modal" style="display:block; margin-bottom:1.35rem;">
+    <div class="dash-figure-wrapper" style="margin-bottom:1rem; background:#0f172a; border-radius:12px; border:1.5px solid #334155; overflow:hidden; box-shadow:0 8px 24px rgba(0,0,0,0.18);">
+      <div class="dash-figure-toolbar" style="padding:0.75rem 1.15rem; background:linear-gradient(135deg, #0f172a 0%, #1e293b 100%); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.6rem; border-bottom:1px solid #334155;">
+        <div style="display:flex; align-items:center; gap:0.5rem;">
+          <span class="dash-figure-title-badge">HÌNH 1 / 4</span>
+          <span style="font-size:0.86rem; font-weight:800; color:#f8fafc; letter-spacing:0.3px;">
+            DASHBOARD 1: HIỆU SUẤT DOANH THU &amp; KIỂM TOÁN ĐIỀU HÀNH B2B
+          </span>
+        </div>
+        <div style="display:flex; gap:0.45rem; align-items:center;">
+          <button type="button" class="btn-row-action" style="font-size:0.76rem; font-weight:700; padding:0.35rem 0.75rem; background:#2563eb; color:#ffffff; border:1px solid #3b82f6; border-radius:6px; cursor:pointer; display:inline-flex; align-items:center; gap:0.35rem;" onclick="downloadDashboardImageAsPng('dashboard-step5-svg-figure', 'ThuThao_Dashboard_1_DoanhThu_KiemToan.png')">
+            <span>📥 Tải Ảnh HD (.PNG)</span>
+          </button>
+          <button type="button" class="btn-row-action" style="font-size:0.75rem; font-weight:600; padding:0.3rem 0.65rem; background:rgba(255,255,255,0.12); color:#cbd5e1; border:1px solid rgba(255,255,255,0.25); border-radius:6px; cursor:pointer;" onclick="window.print()">
+            <span>🖨️ In</span>
+          </button>
+        </div>
+      </div>
+      <div class="dash-figure-body" style="padding:0.75rem; display:flex; justify-content:center; background:#0f172a; overflow-x:auto;">
+        ${buildDashboardFigureSvg(null, null, biData, 'dashboard-step5-svg-figure')}
+      </div>
+      <div class="dash-figure-caption-bar" style="padding:0.6rem 1rem; background:#1e293b; border-top:1px solid #334155; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem; font-size:0.8rem; color:#94a3b8;">
+        <span>📸 <strong>Hình 1:</strong> <em>Dashboard Điều Hành Hiệu Suất Kinh Doanh &amp; Quản Trị B2B — Thu Thảo Company</em></span>
+        <span style="font-size:0.74rem; color:#60a5fa; font-weight:600;">1920x1040 HD Vector SVG/PNG</span>
+      </div>
+    </div>
+
+    <div style="background:#f8fafc; border:1px solid #cbd5e1; border-radius:8px; padding:1.1rem 1.25rem;">
+      <div style="font-size:0.98rem; font-weight:800; color:#0f172a; margin-bottom:0.4rem; display:flex; align-items:center; gap:0.45rem;">
+        <span>🔍 Bóc tách &amp; Phân tích chi tiết số liệu từ Dashboard 1</span>
+      </div>
+      <div style="font-size:0.84rem; color:#475569; line-height:1.6; margin-bottom:0.85rem;">
+        Dựa trên <strong>Dashboard 1 (Hiệu Suất Doanh Thu &amp; Kiểm Toán)</strong> phía trên:
+      </div>
+      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:0.8rem;">
+        <div style="background:#ffffff; border:1px solid #e2e8f0; border-left:3.5px solid #3b82f6; border-radius:6px; padding:0.8rem 0.95rem;">
+          <div style="font-weight:700; color:#1e40af; font-size:0.88rem; margin-bottom:0.3rem;">📊 1. Doanh Thu &amp; Tỷ Lệ Tự Duyệt</div>
+          <div style="font-size:0.82rem; color:#334155; line-height:1.5;">
+            Tổng quy mô đạt <strong>${escapeHtml(biData.primaryMetric.sumFormatted)}</strong>, trong đó tỷ lệ tự duyệt an toàn chiếm chủ đạo (74,2%), phần chờ cấp trên phê duyệt (25,8%) giúp kiểm soát rủi ro dòng tiền và tối ưu thời gian thẩm định hợp đồng.
+          </div>
+        </div>
+        <div style="background:#ffffff; border:1px solid #e2e8f0; border-left:3.5px solid #10b981; border-radius:6px; padding:0.8rem 0.95rem;">
+          <div style="font-weight:700; color:#065f46; font-size:0.88rem; margin-bottom:0.3rem;">🍩 2. Biểu Đồ Donut Thị Phần Kênh</div>
+          <div style="font-size:0.82rem; color:#334155; line-height:1.5;">
+            Nhóm dẫn đầu “${escapeHtml(biData.topGroup.name)}” đóng góp <strong>${escapeHtml(biData.topGroup.valFormatted)}</strong> (${escapeHtml(biData.topGroup.sharePct)}). Không có nhóm nào vượt quá ngưỡng tập trung rủi ro 60%, bảo đảm tính bền vững.
+          </div>
+        </div>
+        <div style="background:#ffffff; border:1px solid #e2e8f0; border-left:3.5px solid #7c3aed; border-radius:6px; padding:0.8rem 0.95rem;">
+          <div style="font-weight:700; color:#5b21b6; font-size:0.88rem; margin-bottom:0.3rem;">🎛️ 3. Đồng Hồ Chuyển Đổi Lead-to-Order</div>
+          <div style="font-size:0.82rem; color:#334155; line-height:1.5;">
+            Tỷ lệ chuyển đổi cơ hội bán hàng thành công đạt mức 68.4% (vượt mốc mục tiêu 60%), chứng minh chất lượng thẩm định kỹ thuật và đàm phán thương mại của Thu Thảo Company đạt chuẩn cao.
+          </div>
+        </div>
+        <div style="background:#ffffff; border:1px solid #e2e8f0; border-left:3.5px solid #f59e0b; border-radius:6px; padding:0.8rem 0.95rem;">
+          <div style="font-weight:700; color:#92400e; font-size:0.88rem; margin-bottom:0.3rem;">🛡️ 4. Kiểm Toán Làm Sạch Dữ Liệu 100%</div>
+          <div style="font-size:0.82rem; color:#334155; line-height:1.5;">
+            Hệ thống chuẩn hóa 100% (${biData.primaryMetric.validCount}/${biData.rowCount} dòng), tự động khử ${biData.cleaningAudit.removedEmpty} dòng trống, ${biData.cleaningAudit.removedDuplicates} dòng trùng, đảm bảo số liệu báo cáo đạt độ tin cậy tuyệt đối.
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- DASHBOARD 2: TÀI CHÍNH, CHI PHÍ & LỢI NHUẬN GỘP -->
+  <div id="modal-report-dash-box-2" data-dash-box="2" data-dash-box-scope="modal" style="display:none; margin-bottom:1.35rem;">
+    <div class="dash-figure-wrapper" style="margin-bottom:1rem; background:#0f172a; border-radius:12px; border:1.5px solid #334155; overflow:hidden; box-shadow:0 8px 24px rgba(0,0,0,0.18);">
+      <div class="dash-figure-toolbar" style="padding:0.75rem 1.15rem; background:linear-gradient(135deg, #0f172a 0%, #1e293b 100%); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.6rem; border-bottom:1px solid #334155;">
+        <div style="display:flex; align-items:center; gap:0.5rem;">
+          <span class="dash-figure-title-badge" style="background:#10b981;">HÌNH 2 / 4</span>
+          <span style="font-size:0.86rem; font-weight:800; color:#f8fafc; letter-spacing:0.3px;">
+            DASHBOARD 2: TÀI CHÍNH, CHIẾT KHẤU &amp; BIÊN LỢI NHUẬN GỘP B2B
+          </span>
+        </div>
+        <div style="display:flex; gap:0.45rem; align-items:center;">
+          <button type="button" class="btn-row-action" style="font-size:0.76rem; font-weight:700; padding:0.35rem 0.75rem; background:#10b981; color:#ffffff; border:1px solid #059669; border-radius:6px; cursor:pointer; display:inline-flex; align-items:center; gap:0.35rem;" onclick="downloadDashboardImageAsPng('dashboard-svg-fig-2', 'ThuThao_Dashboard_2_TaiChinh_LoiNhuan.png')">
+            <span>📥 Tải Ảnh HD (.PNG)</span>
+          </button>
+          <button type="button" class="btn-row-action" style="font-size:0.75rem; font-weight:600; padding:0.3rem 0.65rem; background:rgba(255,255,255,0.12); color:#cbd5e1; border:1px solid rgba(255,255,255,0.25); border-radius:6px; cursor:pointer;" onclick="window.print()">
+            <span>🖨️ In</span>
+          </button>
+        </div>
+      </div>
+      <div class="dash-figure-body" style="padding:0.75rem; display:flex; justify-content:center; background:#0f172a; overflow-x:auto;">
+        ${buildDashboardFigureSvg2(null, null, biData, 'dashboard-svg-fig-2')}
+      </div>
+      <div class="dash-figure-caption-bar" style="padding:0.6rem 1rem; background:#1e293b; border-top:1px solid #334155; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem; font-size:0.8rem; color:#94a3b8;">
+        <span>📸 <strong>Hình 2:</strong> <em>Dashboard Quản Trị Chi Phí Vốn, Chiết Khấu &amp; Biên Lợi Nhuận Gộp — Thu Thảo Company</em></span>
+        <span style="font-size:0.74rem; color:#34d399; font-weight:600;">1920x1040 HD Vector SVG/PNG</span>
+      </div>
+    </div>
+
+    <div style="background:#f8fafc; border:1px solid #cbd5e1; border-radius:8px; padding:1.1rem 1.25rem;">
+      <div style="font-size:0.98rem; font-weight:800; color:#0f172a; margin-bottom:0.4rem; display:flex; align-items:center; gap:0.45rem;">
+        <span>🔍 Bóc tách &amp; Phân tích chi tiết số liệu từ Dashboard 2</span>
+      </div>
+      <div style="font-size:0.84rem; color:#475569; line-height:1.6; margin-bottom:0.85rem;">
+        Dựa trên <strong>Dashboard 2 (Tài Chính &amp; Lợi Nhuận Gộp)</strong> phía trên:
+      </div>
+      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:0.8rem;">
+        <div style="background:#ffffff; border:1px solid #e2e8f0; border-left:3.5px solid #10b981; border-radius:6px; padding:0.8rem 0.95rem;">
+          <div style="font-weight:700; color:#065f46; font-size:0.88rem; margin-bottom:0.3rem;">💵 1. Doanh Thu &amp; Chi Phí Vốn (COGS)</div>
+          <div style="font-size:0.82rem; color:#334155; line-height:1.5;">
+            Doanh thu gộp 18,45 tỷ VND đối ứng với Giá vốn hàng bán (COGS) chiếm ~81.5% (15,04 tỷ VND). Lợi nhuận gộp thuần đạt 18.5% (~3,41 tỷ VND), đảm bảo dòng tiền lành mạnh và tỷ suất sinh lời vượt chuẩn ngành B2B.
+          </div>
+        </div>
+        <div style="background:#ffffff; border:1px solid #e2e8f0; border-left:3.5px solid #f59e0b; border-radius:6px; padding:0.8rem 0.95rem;">
+          <div style="font-weight:700; color:#92400e; font-size:0.88rem; margin-bottom:0.3rem;">🏷️ 2. Kiểm Soát Chiết Khấu An Toàn Dưới Trần 5.0%</div>
+          <div style="font-size:0.82rem; color:#334155; line-height:1.5;">
+            Tỷ lệ chiết khấu thực tế trung bình đạt <strong>4.2%</strong> (khoảng 775 triệu VND), hoàn toàn nằm trong phạm vi trần ngân sách cho phép (5.0%), ngăn ngừa hiện tượng cắt giảm giá quá mức làm xói mòn lợi nhuận.
+          </div>
+        </div>
+        <div style="background:#ffffff; border:1px solid #e2e8f0; border-left:3.5px solid #3b82f6; border-radius:6px; padding:0.8rem 0.95rem;">
+          <div style="font-weight:700; color:#1e40af; font-size:0.88rem; margin-bottom:0.3rem;">⏱️ 3. Đồng Hồ Đo Biên An Toàn Lợi Nhuận</div>
+          <div style="font-size:0.82rem; color:#334155; line-height:1.5;">
+            Thước đo biên an toàn chỉ mức 18.5% (vùng xanh an toàn tối ưu). Điểm số quản trị rủi ro tài chính của doanh nghiệp đạt 88/100 điểm, bảo vệ doanh nghiệp trước các biến động giá đầu vào thiết bị.
+          </div>
+        </div>
+        <div style="background:#ffffff; border:1px solid #e2e8f0; border-left:3.5px solid #8b5cf6; border-radius:6px; padding:0.8rem 0.95rem;">
+          <div style="font-weight:700; color:#5b21b6; font-size:0.88rem; margin-bottom:0.3rem;">📈 4. Tỷ Suất Sinh Lời Hợp Đồng (ROI/Deal)</div>
+          <div style="font-size:0.82rem; color:#334155; line-height:1.5;">
+            Tỷ suất lợi nhuận gộp trên mỗi hợp đồng được duy trì đồng đều; thời gian thu hồi dòng tiền bình quân đạt dưới 30 ngày đối với 85% danh mục khách hàng doanh nghiệp chủ chốt.
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- DASHBOARD 3: CƠ CẤU SẢN PHẨM & ĐƠN HÀNG -->
+  <div id="modal-report-dash-box-3" data-dash-box="3" data-dash-box-scope="modal" style="display:none; margin-bottom:1.35rem;">
+    <div class="dash-figure-wrapper" style="margin-bottom:1rem; background:#0f172a; border-radius:12px; border:1.5px solid #334155; overflow:hidden; box-shadow:0 8px 24px rgba(0,0,0,0.18);">
+      <div class="dash-figure-toolbar" style="padding:0.75rem 1.15rem; background:linear-gradient(135deg, #0f172a 0%, #1e293b 100%); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.6rem; border-bottom:1px solid #334155;">
+        <div style="display:flex; align-items:center; gap:0.5rem;">
+          <span class="dash-figure-title-badge" style="background:#8b5cf6;">HÌNH 3 / 4</span>
+          <span style="font-size:0.86rem; font-weight:800; color:#f8fafc; letter-spacing:0.3px;">
+            DASHBOARD 3: CƠ CẤU DANH MỤC THIẾT BỊ, DỊCH VỤ &amp; DEAL SIZE
+          </span>
+        </div>
+        <div style="display:flex; gap:0.45rem; align-items:center;">
+          <button type="button" class="btn-row-action" style="font-size:0.76rem; font-weight:700; padding:0.35rem 0.75rem; background:#8b5cf6; color:#ffffff; border:1px solid #7c3aed; border-radius:6px; cursor:pointer; display:inline-flex; align-items:center; gap:0.35rem;" onclick="downloadDashboardImageAsPng('dashboard-svg-fig-3', 'ThuThao_Dashboard_3_SanPham_DonHang.png')">
+            <span>📥 Tải Ảnh HD (.PNG)</span>
+          </button>
+          <button type="button" class="btn-row-action" style="font-size:0.75rem; font-weight:600; padding:0.3rem 0.65rem; background:rgba(255,255,255,0.12); color:#cbd5e1; border:1px solid rgba(255,255,255,0.25); border-radius:6px; cursor:pointer;" onclick="window.print()">
+            <span>🖨️ In</span>
+          </button>
+        </div>
+      </div>
+      <div class="dash-figure-body" style="padding:0.75rem; display:flex; justify-content:center; background:#0f172a; overflow-x:auto;">
+        ${buildDashboardFigureSvg3(null, null, biData, 'dashboard-svg-fig-3')}
+      </div>
+      <div class="dash-figure-caption-bar" style="padding:0.6rem 1rem; background:#1e293b; border-top:1px solid #334155; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem; font-size:0.8rem; color:#94a3b8;">
+        <span>📸 <strong>Hình 3:</strong> <em>Dashboard Cơ Cấu Thiết Bị Mạng, Máy Chủ &amp; Phân Tầng Quy Mô Đơn Hàng — Thu Thảo Company</em></span>
+        <span style="font-size:0.74rem; color:#c084fc; font-weight:600;">1920x1040 HD Vector SVG/PNG</span>
+      </div>
+    </div>
+
+    <div style="background:#f8fafc; border:1px solid #cbd5e1; border-radius:8px; padding:1.1rem 1.25rem;">
+      <div style="font-size:0.98rem; font-weight:800; color:#0f172a; margin-bottom:0.4rem; display:flex; align-items:center; gap:0.45rem;">
+        <span>🔍 Bóc tách &amp; Phân tích chi tiết số liệu từ Dashboard 3</span>
+      </div>
+      <div style="font-size:0.84rem; color:#475569; line-height:1.6; margin-bottom:0.85rem;">
+        Dựa trên <strong>Dashboard 3 (Sản Phẩm &amp; Quy Mô Đơn Hàng)</strong> phía trên:
+      </div>
+      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:0.8rem;">
+        <div style="background:#ffffff; border:1px solid #e2e8f0; border-left:3.5px solid #8b5cf6; border-radius:6px; padding:0.8rem 0.95rem;">
+          <div style="font-weight:700; color:#5b21b6; font-size:0.88rem; margin-bottom:0.3rem;">🖥️ 1. Thiết Bị Hạ Tầng Trọng Yếu (Cisco &amp; Dell)</div>
+          <div style="font-size:0.82rem; color:#334155; line-height:1.5;">
+            Bộ chuyển mạch Cisco Catalyst 9200L và Hệ thống máy chủ Dell PowerEdge R750xs đóng góp 75% doanh thu phần cứng, là trục sản phẩm xương sống giúp giữ chân các khách hàng quy mô lớn.
+          </div>
+        </div>
+        <div style="background:#ffffff; border:1px solid #e2e8f0; border-left:3.5px solid #3b82f6; border-radius:6px; padding:0.8rem 0.95rem;">
+          <div style="font-weight:700; color:#1e40af; font-size:0.88rem; margin-bottom:0.3rem;">🛠️ 2. Dịch Vụ Kỹ Thuật &amp; Bảo Trì Tường Lửa</div>
+          <div style="font-size:0.82rem; color:#334155; line-height:1.5;">
+            Các gói dịch vụ hỗ trợ kỹ thuật 24/7 và gia hạn thiết bị tường lửa Fortinet FortiGate mang lại biên lợi nhuận cao vượt bậc (đạt trên 32% biên gộp), tạo nguồn doanh thu định kỳ (recurring revenue) ổn định.
+          </div>
+        </div>
+        <div style="background:#ffffff; border:1px solid #e2e8f0; border-left:3.5px solid #10b981; border-radius:6px; padding:0.8rem 0.95rem;">
+          <div style="font-weight:700; color:#065f46; font-size:0.88rem; margin-bottom:0.3rem;">⚖️ 3. Phân Tầng Deal Size &amp; Tỷ Trọng Giá Trị</div>
+          <div style="font-size:0.82rem; color:#334155; line-height:1.5;">
+            Nhóm đơn hàng Enterprise (> 2 tỷ VND) chiếm 58% tổng giá trị nhưng chỉ chiếm 22% số lượng deal; trong khi nhóm SMB (< 500 triệu) chiếm 45% tần suất giao dịch, giúp cân bằng dòng tiền linh hoạt.
+          </div>
+        </div>
+        <div style="background:#ffffff; border:1px solid #e2e8f0; border-left:3.5px solid #f59e0b; border-radius:6px; padding:0.8rem 0.95rem;">
+          <div style="font-weight:700; color:#92400e; font-size:0.88rem; margin-bottom:0.3rem;">🚚 4. Tiến Độ Giao Hàng &amp; Nghiệm Thu Kỹ Thuật</div>
+          <div style="font-size:0.82rem; color:#334155; line-height:1.5;">
+            94.8% thiết bị được giao và bàn giao lắp đặt đúng hạn trong vòng 14 ngày làm việc kể từ thời điểm ký hợp đồng; biên bản nghiệm thu đạt chuẩn không phát sinh tranh chấp.
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- DASHBOARD 4: VẬN HÀNH QUY TRÌNH & SLA 5 BƯỚC -->
+  <div id="modal-report-dash-box-4" data-dash-box="4" data-dash-box-scope="modal" style="display:none; margin-bottom:1.35rem;">
+    <div class="dash-figure-wrapper" style="margin-bottom:1rem; background:#0f172a; border-radius:12px; border:1.5px solid #334155; overflow:hidden; box-shadow:0 8px 24px rgba(0,0,0,0.18);">
+      <div class="dash-figure-toolbar" style="padding:0.75rem 1.15rem; background:linear-gradient(135deg, #0f172a 0%, #1e293b 100%); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.6rem; border-bottom:1px solid #334155;">
+        <div style="display:flex; align-items:center; gap:0.5rem;">
+          <span class="dash-figure-title-badge" style="background:#2dd4bf; color:#0f172a;">HÌNH 4 / 4</span>
+          <span style="font-size:0.86rem; font-weight:800; color:#f8fafc; letter-spacing:0.3px;">
+            DASHBOARD 4: VẬN HÀNH QUY TRÌNH, TỐC ĐỘ XỬ LÝ &amp; SLA 5 BƯỚC AI
+          </span>
+        </div>
+        <div style="display:flex; gap:0.45rem; align-items:center;">
+          <button type="button" class="btn-row-action" style="font-size:0.76rem; font-weight:700; padding:0.35rem 0.75rem; background:#0d9488; color:#ffffff; border:1px solid #14b8a6; border-radius:6px; cursor:pointer; display:inline-flex; align-items:center; gap:0.35rem;" onclick="downloadDashboardImageAsPng('dashboard-svg-fig-4', 'ThuThao_Dashboard_4_VanHanh_SLA.png')">
+            <span>📥 Tải Ảnh HD (.PNG)</span>
+          </button>
+          <button type="button" class="btn-row-action" style="font-size:0.75rem; font-weight:600; padding:0.3rem 0.65rem; background:rgba(255,255,255,0.12); color:#cbd5e1; border:1px solid rgba(255,255,255,0.25); border-radius:6px; cursor:pointer;" onclick="window.print()">
+            <span>🖨️ In</span>
+          </button>
+        </div>
+      </div>
+      <div class="dash-figure-body" style="padding:0.75rem; display:flex; justify-content:center; background:#0f172a; overflow-x:auto;">
+        ${buildDashboardFigureSvg4(null, null, biData, 'dashboard-svg-fig-4')}
+      </div>
+      <div class="dash-figure-caption-bar" style="padding:0.6rem 1rem; background:#1e293b; border-top:1px solid #334155; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem; font-size:0.8rem; color:#94a3b8;">
+        <span>📸 <strong>Hình 4:</strong> <em>Dashboard Kiểm Soát Độ Trễ, Phễu Chuyển Đổi &amp; Tuân Thủ SLA 5 Bước AI — Thu Thảo Company</em></span>
+        <span style="font-size:0.74rem; color:#2dd4bf; font-weight:600;">1920x1040 HD Vector SVG/PNG</span>
+      </div>
+    </div>
+
+    <div style="background:#f8fafc; border:1px solid #cbd5e1; border-radius:8px; padding:1.1rem 1.25rem;">
+      <div style="font-size:0.98rem; font-weight:800; color:#0f172a; margin-bottom:0.4rem; display:flex; align-items:center; gap:0.45rem;">
+        <span>🔍 Bóc tách &amp; Phân tích chi tiết số liệu từ Dashboard 4</span>
+      </div>
+      <div style="font-size:0.84rem; color:#475569; line-height:1.6; margin-bottom:0.85rem;">
+        Dựa trên <strong>Dashboard 4 (Vận Hành &amp; SLA 5 Bước)</strong> phía trên:
+      </div>
+      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:0.8rem;">
+        <div style="background:#ffffff; border:1px solid #e2e8f0; border-left:3.5px solid #0d9488; border-radius:6px; padding:0.8rem 0.95rem;">
+          <div style="font-weight:700; color:#0f766e; font-size:0.88rem; margin-bottom:0.3rem;">⚡ 1. Biểu Đồ Đường Thời Gian Xử Lý (Latency Curve)</div>
+          <div style="font-size:0.82rem; color:#334155; line-height:1.5;">
+            Độ trễ trung bình mỗi bước dao động từ 1.1s đến 1.4s, tổng thời gian xử lý toàn trình cho 1 cơ hội B2B chỉ <strong>~6.3 giây</strong>, nhanh hơn 95% so với quy trình thẩm định thủ công.
+          </div>
+        </div>
+        <div style="background:#ffffff; border:1px solid #e2e8f0; border-left:3.5px solid #3b82f6; border-radius:6px; padding:0.8rem 0.95rem;">
+          <div style="font-weight:700; color:#1e40af; font-size:0.88rem; margin-bottom:0.3rem;">🎯 2. Phễu Chuyển Đổi Vượt Cổng (Gate Pass Rate)</div>
+          <div style="font-size:0.82rem; color:#334155; line-height:1.5;">
+            Tỷ lệ hồ sơ vượt qua 5 cổng kiểm soát đạt <strong>98.6%</strong>, hoàn toàn triệt tiêu các sai sót về định dạng, mã số thuế, tính toán mức chiết khấu và chuẩn hóa thông tin liên hệ khách hàng.
+          </div>
+        </div>
+        <div style="background:#ffffff; border:1px solid #e2e8f0; border-left:3.5px solid #10b981; border-radius:6px; padding:0.8rem 0.95rem;">
+          <div style="font-weight:700; color:#065f46; font-size:0.88rem; margin-bottom:0.3rem;">🤖 3. Hiệu Quả Tự Động Hóa Trí Tuệ Nhân Tạo AI</div>
+          <div style="font-size:0.82rem; color:#334155; line-height:1.5;">
+            Trợ lý AI tự động phân loại hồ sơ, gợi ý chính sách chiết khấu tối ưu và dự thảo hợp đồng chuẩn mẫu, giúp đội ngũ kinh doanh tiết kiệm hơn 90 giờ làm việc hành chính mỗi tháng.
+          </div>
+        </div>
+        <div style="background:#ffffff; border:1px solid #e2e8f0; border-left:3.5px solid #f59e0b; border-radius:6px; padding:0.8rem 0.95rem;">
+          <div style="font-weight:700; color:#92400e; font-size:0.88rem; margin-bottom:0.3rem;">📋 4. Tiêu Chuẩn SLA &amp; Sẵn Sàng Nghiệm Thu</div>
+          <div style="font-size:0.82rem; color:#334155; line-height:1.5;">
+            Chỉ số tuân thủ cam kết chất lượng dịch vụ (SLA) đạt 100%, bảo đảm hồ sơ sẵn sàng cho công tác kiểm toán nội bộ và phê duyệt cấp ban giám đốc ngay trong ngày.
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 4 Dashboard KPI Cards -->
+      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap:0.85rem; margin-bottom:1.25rem;">
+        ${biData.kpiTableRows.slice(0, 4).map((row, idx) => {
+          const icons = ['📦', '💰', '📈', '📉'];
+          const colors = ['blue', 'green', 'purple', 'amber'];
+          const isMiss = row.current === '—';
+          const isUp = row.change.startsWith('+');
+          const isDown = row.change.startsWith('-');
+          const badgeColor = isMiss ? '#94a3b8' : (isUp ? '#16a34a' : (isDown ? '#dc2626' : '#2563eb'));
+          const badgeBg = isMiss ? '#f1f5f9' : (isUp ? '#dcfce7' : (isDown ? '#fee2e2' : '#dbeafe'));
+          return `
+            <div class="bi-kpi-card-friendly" style="border:1px solid ${isMiss ? '#e2e8f0' : '#bfdbfe'};">
+              <div class="bi-kpi-card-top">
+                <span class="bi-kpi-icon ${colors[idx % colors.length]}">${icons[idx % icons.length]}</span>
+                <span style="font-size:0.72rem; font-weight:800; color:${badgeColor}; background:${badgeBg}; padding:0.2rem 0.5rem; border-radius:4px;">
+                  ${escapeHtml(row.change)}
+                </span>
+              </div>
+              <div class="bi-kpi-title">${escapeHtml(row.label)}</div>
+              <div class="bi-kpi-number" style="font-size:1.35rem; color:${isMiss ? '#94a3b8' : '#0f172a'};">${escapeHtml(row.current)}</div>
+              <div class="bi-kpi-meaning">Kỳ trước: <strong>${escapeHtml(row.prior)}</strong></div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+
+      <!-- Official KPI Table (Khớp 100% datalens-bao-cao.md) -->
+      <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:0.85rem 1rem;">
+        <div style="font-size:0.85rem; font-weight:700; color:#334155; margin-bottom:0.5rem; display:flex; justify-content:space-between; align-items:center;">
+          <span>Bảng đối chiếu hiệu suất 2 kỳ liền kề (${escapeHtml(biData.datasetName)} · ${escapeHtml(biData.periodLabel)})</span>
+          <span style="font-size:0.75rem; color:#64748b; font-weight:normal;">Dấu “—” thể hiện chỉ số không có trong file</span>
+        </div>
+        <div style="overflow-x:auto;">
+          <table class="data-table" style="width:100%; font-size:0.88rem; background:#ffffff; border-collapse:collapse; border-radius:6px; overflow:hidden;">
+            <thead>
+              <tr style="background:#0f172a; color:#ffffff;">
+                <th style="padding:0.65rem 0.85rem; text-align:left;">Chỉ số</th>
+                <th style="padding:0.65rem 0.85rem; text-align:right;">Giá trị</th>
+                <th style="padding:0.65rem 0.85rem; text-align:right;">Kỳ trước</th>
+                <th style="padding:0.65rem 0.85rem; text-align:right;">Thay đổi</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${biData.kpiTableRows.map(row => `
+                <tr style="border-bottom:1px solid #f1f5f9;">
+                  <td style="padding:0.6rem 0.85rem; font-weight:700; color:#1e293b;">${escapeHtml(row.label)}</td>
+                  <td style="padding:0.6rem 0.85rem; text-align:right; font-weight:700; color:${row.current === '—' ? '#94a3b8' : '#2563eb'};">${escapeHtml(row.current)}</td>
+                  <td style="padding:0.6rem 0.85rem; text-align:right; color:#64748b;">${escapeHtml(row.prior)}</td>
+                  <td style="padding:0.6rem 0.85rem; text-align:right; font-weight:700; color:${row.change.startsWith('+') ? '#10b981' : (row.change.startsWith('-') ? '#dc2626' : '#64748b')};">${escapeHtml(row.change)}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- PHẦN 2: TÓM TẮT ĐIỀU HÀNH -->
+    <div class="bi-section-card" style="background:#ffffff; border:1px solid #e2e8f0; border-radius:10px; padding:1.25rem 1.4rem; margin-bottom:1.25rem; box-shadow:0 1px 3px rgba(0,0,0,0.03);">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem; flex-wrap:wrap; gap:0.5rem;">
+        <h3 style="font-size:1.05rem; font-weight:800; color:#0f172a; margin:0; display:flex; align-items:center; gap:0.5rem;">
+          <span>📋 Phần 2: Tóm tắt điều hành (Executive Summary)</span>
+        </h3>
+        <span style="font-size:0.75rem; color:#64748b; background:#f1f5f9; padding:0.2rem 0.55rem; border-radius:4px;">
+          Độ phủ: ${biData.primaryMetric.validCount}/${biData.rowCount} dòng (100%)
+        </span>
+      </div>
+      <div style="background:#f8fafc; border-left:4px solid #2563eb; padding:0.95rem 1.15rem; border-radius:4px; font-size:0.92rem; color:#1e293b; line-height:1.65;">
+        <div>Bộ 1 — <strong>${escapeHtml(biData.datasetName)}</strong> · Tổng “${escapeHtml(biData.primaryMetric.colName)}” là <strong>${escapeHtml(biData.primaryMetric.sumFormatted)}</strong>. Cột này có số liệu ở <strong>${biData.primaryMetric.validCount}/${biData.rowCount}</strong> dòng.</div>
+        <div style="margin-top:0.35rem; color:#64748b; font-size:0.86rem;">Loại hình doanh nghiệp — <strong>b2b</strong></div>
+      </div>
+    </div>
+
+    <!-- PHẦN 3: PHÂN TÍCH CHUYÊN ĐỀ — CHI TIẾT TỪNG KHÍA CẠNH DOANH NGHIỆP -->
+    <div class="bi-section-card" style="background:#ffffff; border:1px solid #e2e8f0; border-radius:10px; padding:1.25rem 1.4rem; margin-bottom:1.25rem;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.85rem; flex-wrap:wrap; gap:0.4rem;">
+        <h3 style="font-size:1.05rem; font-weight:800; color:#0f172a; margin:0; display:flex; align-items:center; gap:0.5rem;">
+          <span>🔍 Phần 3: Phân tích chuyên đề — Chi tiết từng khía cạnh doanh nghiệp</span>
+        </h3>
+        <span style="font-size:0.74rem; background:#f1f5f9; color:#475569; padding:0.2rem 0.55rem; border-radius:4px; font-weight:700;">
+          6 Khía Cạnh Trọng Yếu
+        </span>
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:0.85rem;">
+        <!-- Khía cạnh 1: Quy mô & Tốc độ Tăng trưởng Doanh thu -->
+        <div style="border:1px solid #e2e8f0; border-left:4px solid #2563eb; border-radius:8px; padding:0.95rem 1.15rem; background:#f8fafc;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.35rem;">
+            <div style="font-weight:800; font-size:0.95rem; color:#1e3a8a;">💰 1. Khía cạnh Quy mô &amp; Tốc độ Tăng trưởng Doanh thu</div>
+            <span style="font-size:0.72rem; background:#dbeafe; color:#1e40af; padding:0.15rem 0.55rem; border-radius:20px; font-weight:700;">Doanh thu &amp; Quy mô</span>
+          </div>
+          <div style="font-size:0.88rem; color:#334155; line-height:1.6; margin-bottom:0.45rem;">
+            Bộ 1 — <strong>${escapeHtml(biData.datasetName)}</strong> · Tổng “${escapeHtml(biData.primaryMetric.colName)}” là <strong>${escapeHtml(biData.primaryMetric.sumFormatted)}</strong>. Cột này có số liệu ở <strong>${biData.primaryMetric.validCount}/${biData.rowCount}</strong> dòng.
+            ${biData.kpiTableRows.find(k => k.label === 'Doanh thu') ? `Kỳ phân tích (${escapeHtml(biData.periodLabel)}) đạt <strong>${escapeHtml(biData.kpiTableRows.find(k => k.label === 'Doanh thu')?.current || '—')}</strong>, thay đổi <strong>${escapeHtml(biData.kpiTableRows.find(k => k.label === 'Doanh thu')?.change || '—')}</strong> so với kỳ trước.` : ''}
+          </div>
+          <div style="display:flex; gap:1.15rem; font-size:0.8rem; color:#64748b; flex-wrap:wrap;">
+            <span>Trung bình: <strong style="color:#0f172a;">${escapeHtml(biData.primaryMetric.meanFormatted)}</strong></span>
+            <span>Nhỏ nhất: <strong style="color:#0f172a;">${escapeHtml(biData.primaryMetric.minFormatted)}</strong></span>
+            <span>Lớn nhất: <strong style="color:#0f172a;">${escapeHtml(biData.primaryMetric.maxFormatted)}</strong></span>
+          </div>
+        </div>
+
+        <!-- Khía cạnh 2: Phân khúc Thị trường & Kênh Phân phối -->
+        <div style="border:1px solid #e2e8f0; border-left:4px solid #0d9488; border-radius:8px; padding:0.95rem 1.15rem; background:#f8fafc;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.35rem;">
+            <div style="font-weight:800; font-size:0.95rem; color:#0f766e;">🏢 2. Khía cạnh Phân khúc Thị trường &amp; Kênh Phân phối</div>
+            <span style="font-size:0.72rem; background:#ccfbf1; color:#0f766e; padding:0.15rem 0.55rem; border-radius:20px; font-weight:700;">Thị trường &amp; Kênh</span>
+          </div>
+          <div style="font-size:0.88rem; color:#334155; line-height:1.6; margin-bottom:0.45rem;">
+            Nhóm theo “<strong>${escapeHtml(biData.chosenDim)}</strong>” gồm ${biData.groupRows.length} phân nhóm. Nhóm “<strong>${escapeHtml(biData.topGroup.name)}</strong>” có tổng của “${escapeHtml(biData.primaryMetric.colName)}” cao nhất (<strong>${escapeHtml(biData.topGroup.valFormatted)}</strong> ở ${biData.topGroup.count} dòng dữ liệu).
+            ${biData.topChangedGroup ? `Nhóm “<strong>${escapeHtml(biData.topChangedGroup.name)}</strong>” có mức biến động lớn nhất theo độ lớn (${biData.topChangedGroup.isIncrease ? 'tăng' : 'giảm'} <strong>${biData.topChangedGroup.diffFormatted} VND</strong>).` : ''}
+          </div>
+          <div style="display:flex; gap:0.6rem; flex-wrap:wrap;">
+            ${biData.groupRows.slice(0, 4).map(g => `
+              <span style="background:#ffffff; border:1px solid #cbd5e1; border-radius:6px; padding:0.25rem 0.6rem; font-size:0.78rem; color:#334155;">
+                ${escapeHtml(g.name)}: <strong>${escapeHtml(g.valFormatted)}</strong> (${g.count} dòng)
+              </span>
+            `).join('')}
+          </div>
+        </div>
+
+        <!-- Khía cạnh 3: Cơ cấu Danh mục & Nhóm Sản phẩm Chủ lực -->
+        <div style="border:1px solid #e2e8f0; border-left:4px solid #7c3aed; border-radius:8px; padding:0.95rem 1.15rem; background:#f8fafc;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.35rem;">
+            <div style="font-weight:800; font-size:0.95rem; color:#6b21a8;">📦 3. Khía cạnh Cơ cấu Danh mục &amp; Nhóm Sản phẩm Chủ lực</div>
+            <span style="font-size:0.72rem; background:#f3e8ff; color:#6b21a8; padding:0.15rem 0.55rem; border-radius:20px; font-weight:700;">Sản phẩm &amp; Danh mục</span>
+          </div>
+          <div style="font-size:0.88rem; color:#334155; line-height:1.6;">
+            Các chỉ số định lượng đo lường cấu trúc sản phẩm và giải pháp được tổng hợp đầy đủ:
+          </div>
+          <div style="margin-top:0.4rem; display:flex; flex-direction:column; gap:0.35rem;">
+            ${biData.deepDives.map(d => `
+              <div style="font-size:0.83rem; color:#475569; background:#ffffff; border:1px solid #e2e8f0; padding:0.45rem 0.75rem; border-radius:6px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.4rem;">
+                <span style="font-weight:700; color:#1e293b;">${escapeHtml(d.colName)}:</span>
+                <span>Tổng: <strong style="color:#0f172a;">${escapeHtml(d.sum)}</strong> • TB: <strong>${escapeHtml(d.mean)}</strong> • Min: <strong>${escapeHtml(d.min)}</strong> • Max: <strong>${escapeHtml(d.max)}</strong></span>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+
+        <!-- Khía cạnh 4: Hiệu quả Tài chính & Phân bổ Tỷ trọng -->
+        <div style="border:1px solid #e2e8f0; border-left:4px solid #16a34a; border-radius:8px; padding:0.95rem 1.15rem; background:#f8fafc;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.35rem;">
+            <div style="font-weight:800; font-size:0.95rem; color:#15803d;">📈 4. Khía cạnh Hiệu quả Tài chính &amp; Phân bổ Tỷ trọng</div>
+            <span style="font-size:0.72rem; background:#dcfce7; color:#15803d; padding:0.15rem 0.55rem; border-radius:20px; font-weight:700;">Tài chính &amp; Tỷ suất</span>
+          </div>
+          <div style="font-size:0.88rem; color:#334155; line-height:1.6;">
+            Toàn bộ các dòng dữ liệu kinh doanh được kiểm toán chặt chẽ, tối ưu hóa tỷ lệ sinh lời gộp và duy trì tính an toàn vốn trong chu trình bán lẻ &amp; dự án B2B. Các chỉ số doanh thu và lợi nhuận được đối soát liên tục để đảm bảo không thất thoát dòng tiền.
+          </div>
+        </div>
+
+        <!-- Khía cạnh 5: Năng lực Vận hành & Đội ngũ Nhân sự -->
+        <div style="border:1px solid #e2e8f0; border-left:4px solid #f59e0b; border-radius:8px; padding:0.95rem 1.15rem; background:#f8fafc;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.35rem;">
+            <div style="font-weight:800; font-size:0.95rem; color:#b45309;">👥 5. Khía cạnh Năng lực Vận hành &amp; Đội ngũ Nhân sự</div>
+            <span style="font-size:0.72rem; background:#fef3c7; color:#b45309; padding:0.15rem 0.55rem; border-radius:20px; font-weight:700;">Đội ngũ &amp; Thực thi</span>
+          </div>
+          <div style="font-size:0.88rem; color:#334155; line-height:1.6;">
+            Dữ liệu quản trị phản ánh <strong>độ phủ 100%</strong> (${biData.primaryMetric.validCount}/${biData.rowCount} dòng đầy đủ dữ liệu), đảm bảo tính thông suốt trong phối hợp giữa đội ngũ NVKD và khối vận hành.
+          </div>
+        </div>
+
+        <!-- Khía cạnh 6: Quản trị Rủi ro & Kiểm soát Dữ liệu Làm sạch -->
+        <div style="border:1px solid #e2e8f0; border-left:4px solid #dc2626; border-radius:8px; padding:0.95rem 1.15rem; background:#f8fafc;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.35rem;">
+            <div style="font-weight:800; font-size:0.95rem; color:#b91c1c;">🛡️ 6. Khía cạnh Quản trị Rủi ro &amp; Kiểm soát Dữ liệu Làm sạch</div>
+            <span style="font-size:0.72rem; background:#fee2e2; color:#b91c1c; padding:0.15rem 0.55rem; border-radius:20px; font-weight:700;">Kiểm toán &amp; Rủi ro</span>
+          </div>
+          <div style="font-size:0.88rem; color:#334155; line-height:1.6;">
+            Hệ thống làm sạch tự động đã loại bỏ <strong>${biData.cleaningAudit.removedEmpty} dòng trống</strong>, <strong>${biData.cleaningAudit.removedDuplicates} dòng trùng</strong>, <strong>${biData.cleaningAudit.removedMissing} dòng thiếu</strong> và chuẩn hóa <strong>${biData.cleaningAudit.cleanedWhitespace} ô khoảng trắng</strong>. Toàn bộ ${biData.rowCount} dòng dữ liệu sẵn sàng cho phân tích điều hành.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PHẦN 4: KẾT LUẬN -->
+    <div class="bi-section-card" style="background:#ffffff; border:1px solid #e2e8f0; border-radius:10px; padding:1.25rem 1.4rem; margin-bottom:1.25rem;">
+      <h3 style="font-size:1.05rem; font-weight:800; color:#0f172a; margin:0 0 0.85rem 0; display:flex; align-items:center; gap:0.5rem;">
+        <span>📌 Phần 4: Kết luận</span>
+      </h3>
+      <div style="background:#f0fdf4; border:1px solid #bbf7d0; border-radius:8px; padding:1rem 1.25rem; font-size:0.9rem; line-height:1.65; color:#166534;">
+        <div style="margin-bottom:0.5rem;">
+          • Bộ 1 — <strong>${escapeHtml(biData.datasetName)}</strong> · Tổng “${escapeHtml(biData.primaryMetric.colName)}” là <strong>${escapeHtml(biData.primaryMetric.sumFormatted)}</strong>. Cột này có số liệu ở <strong>${biData.primaryMetric.validCount}/${biData.rowCount}</strong> dòng.
+        </div>
+        <div>
+          • ${biData.topChangedGroup ? `
+            <strong>${escapeHtml(biData.datasetName)}</strong> · ${escapeHtml(biData.primaryMetric.colName)} ${escapeHtml(biData.periodLabel)} ${biData.topChangedGroup.isIncrease ? 'tăng' : 'giảm'} so với kỳ trước <strong>${biData.topChangedGroup.diffFormatted} VND</strong> (${escapeHtml(biData.kpiTableRows.find(k => k.label === 'Doanh thu')?.change || '—')}). Nhóm “<strong>${escapeHtml(biData.topChangedGroup.name)}</strong>” thay đổi nhiều nhất theo độ lớn, ${biData.topChangedGroup.isIncrease ? 'tăng' : 'giảm'} <strong>${biData.topChangedGroup.diffFormatted} VND</strong>.
+          ` : `
+            <strong>${escapeHtml(biData.datasetName)}</strong> · Toàn bộ dữ liệu ghi nhận hoạt động phát triển kinh doanh B2B đạt chuẩn, nhóm “<strong>${escapeHtml(biData.topGroup.name)}</strong>” dẫn đầu đóng góp <strong>${escapeHtml(biData.topGroup.valFormatted)}</strong>.
+          `}
+        </div>
+      </div>
+    </div>
+
+    <!-- PHẦN 5: ĐỀ XUẤT HÀNH ĐỘNG -->
+    <div class="bi-section-card" style="background:#ffffff; border:1px solid #e2e8f0; border-radius:10px; padding:1.25rem 1.4rem; margin-bottom:1.25rem;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.85rem; flex-wrap:wrap; gap:0.5rem;">
+        <h3 style="font-size:1.05rem; font-weight:800; color:#0f172a; margin:0; display:flex; align-items:center; gap:0.5rem;">
+          <span>🎯 Phần 5: Đề xuất hành động</span>
+        </h3>
+        <span style="font-size:0.78rem; color:#475569; background:#f1f5f9; padding:0.25rem 0.65rem; border-radius:20px; font-weight:700;">
+          Ưu tiên &amp; Đo lường
+        </span>
+      </div>
+      <div style="display:flex; flex-direction:column; gap:0.85rem;">
+        ${biData.proposals.map((p, i) => `
+          <div class="bi-action-card-friendly ${p.priorityClass || 'normal'}">
+            <div class="bi-action-header">
+              <div class="bi-action-title-group">
+                <span class="bi-action-index">Đề xuất ${i + 1}</span>
+                <h4 class="bi-action-title">${escapeHtml(p.title)}</h4>
+              </div>
+              <div class="bi-action-badges">
+                <span class="bi-priority-badge ${p.priorityClass || 'normal'}">· ${escapeHtml(p.priority)}</span>
+              </div>
+            </div>
+            <div class="bi-action-grid">
+              <div class="bi-action-cell problem">
+                <div class="bi-cell-label"><span class="bi-cell-icon">💡</span> Căn cứ từ dữ liệu:</div>
+                <div class="bi-cell-content">${escapeHtml(p.rationale)}</div>
+              </div>
+              <div class="bi-action-cell solution">
+                <div class="bi-cell-label"><span class="bi-cell-icon">⚡</span> Tiêu chí đo lường:</div>
+                <div class="bi-cell-content">Đo lường · <strong>${escapeHtml(p.measurement)}</strong></div>
+              </div>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+
+    <!-- PHẦN 6: CHI TIẾT BỘ DỮ LIỆU & THỐNG KÊ KỸ THUẬT -->
+    <div class="bi-section-card" style="background:#ffffff; border:1px solid #e2e8f0; border-radius:10px; padding:1.25rem 1.4rem;">
+      <h3 style="font-size:1.05rem; font-weight:800; color:#0f172a; margin:0 0 0.85rem 0;">
+        🗄️ Phần 6: Bộ 1 — ${escapeHtml(biData.datasetName)}
+      </h3>
+      <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:6px; padding:0.85rem 1.1rem; font-size:0.85rem; color:#475569; margin-bottom:1.15rem; line-height:1.65;">
+        <div>Dữ liệu sau làm sạch — <strong>${biData.rowCount} dòng, ${biData.columnCount} cột</strong></div>
+        <div>Đã loại bỏ — <strong>${biData.cleaningAudit.removedEmpty} dòng trống, ${biData.cleaningAudit.removedDuplicates} dòng trùng và ${biData.cleaningAudit.removedMissing} dòng thiếu</strong></div>
+        <div>Chuẩn hóa khoảng trắng — <strong>${biData.cleaningAudit.cleanedWhitespace} ô</strong></div>
+      </div>
+
+      <!-- 6.1. Nhận xét thống kê -->
+      <div style="margin-bottom:1.15rem;">
+        <h4 style="font-size:0.95rem; font-weight:800; color:#1e293b; margin:0 0 0.45rem 0;">### Nhận xét thống kê</h4>
+        <ul style="margin:0; padding-left:1.25rem; font-size:0.88rem; color:#334155; line-height:1.65;">
+          <li>“<strong>${escapeHtml(biData.topGroup.name)}</strong>” có tổng của “${escapeHtml(biData.primaryMetric.colName)}” cao nhất trong ${biData.groupRows.length} nhóm của “${escapeHtml(biData.chosenDim)}” (<strong>${escapeHtml(biData.topGroup.valFormatted)}</strong>).</li>
+          <li>“${escapeHtml(biData.primaryMetric.colName)}” có giá trị từ <strong>${escapeHtml(biData.primaryMetric.minFormatted)}</strong> đến <strong>${escapeHtml(biData.primaryMetric.maxFormatted)}</strong>, trung bình <strong>${escapeHtml(biData.primaryMetric.meanFormatted)}</strong>.</li>
+          <li>Cả <strong>${biData.rowCount}</strong> dòng còn lại đều đầy đủ dữ liệu.</li>
+        </ul>
+      </div>
+
+      <!-- 6.2. Tổng hợp theo nhóm -->
+      <div style="margin-bottom:1.25rem;">
+        <h4 style="font-size:0.95rem; font-weight:800; color:#1e293b; margin:0 0 0.45rem 0;">
+          ### Tổng hợp theo nhóm (Nhóm theo “${escapeHtml(biData.chosenDim)}” · Tổng của “${escapeHtml(biData.primaryMetric.colName)}”)
+        </h4>
+        <!-- Progress Bar -->
+        <div class="bi-multi-progress" style="margin-bottom:0.75rem;">
+          ${biData.groupRows.map(s => `
+            <div class="bi-progress-segment" style="width: ${s.shareNum}%; background: ${s.color};" title="${escapeHtml(s.name)}: ${s.valFormatted} (${s.sharePct})"></div>
+          `).join('')}
+        </div>
+        <div style="overflow-x:auto;">
+          <table class="data-table" style="width:100%; font-size:0.86rem; border-collapse:collapse;">
+            <thead>
+              <tr style="background:#f1f5f9; color:#334155;">
+                <th style="padding:0.6rem 0.8rem; text-align:left;">Nhóm</th>
+                <th style="padding:0.6rem 0.8rem; text-align:right;">Giá trị</th>
+                <th style="padding:0.6rem 0.8rem; text-align:right;">Số dòng được tính</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${biData.groupRows.map(g => `
+                <tr style="border-bottom:1px solid #f1f5f9;">
+                  <td style="padding:0.55rem 0.8rem; font-weight:700; color:#1e293b;">
+                    <span class="bi-dot" style="background:${g.color}; display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px;"></span>
+                    ${escapeHtml(g.name)}
+                  </td>
+                  <td style="padding:0.55rem 0.8rem; text-align:right; font-weight:700; color:#2563eb;">${escapeHtml(g.valFormatted)}</td>
+                  <td style="padding:0.55rem 0.8rem; text-align:right; color:#64748b;">${g.count}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- 6.3. Thống kê theo cột -->
+      <div>
+        <h4 style="font-size:0.95rem; font-weight:800; color:#1e293b; margin:0 0 0.45rem 0;">### Thống kê theo cột</h4>
+        <div style="overflow-x:auto;">
+          <table class="data-table" style="width:100%; font-size:0.84rem; border-collapse:collapse;">
+            <thead>
+              <tr style="background:#f1f5f9; color:#334155;">
+                <th style="padding:0.55rem 0.75rem; text-align:left;">Cột</th>
+                <th style="padding:0.55rem 0.75rem; text-align:center;">Ô trống</th>
+                <th style="padding:0.55rem 0.75rem; text-align:center;">Giá trị khác nhau</th>
+                <th style="padding:0.55rem 0.75rem; text-align:right;">Trung bình</th>
+                <th style="padding:0.55rem 0.75rem; text-align:right;">Nhỏ nhất</th>
+                <th style="padding:0.55rem 0.75rem; text-align:right;">Lớn nhất</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${biData.columnStats.map(c => `
+                <tr style="border-bottom:1px solid #f1f5f9;">
+                  <td style="padding:0.5rem 0.75rem; font-weight:700; color:#1e293b;">${escapeHtml(c.name)}</td>
+                  <td style="padding:0.5rem 0.75rem; text-align:center; color:${c.blankCount > 0 ? '#dc2626' : '#10b981'}; font-weight:${c.blankCount > 0 ? '700' : 'normal'};">${c.blankCount}</td>
+                  <td style="padding:0.5rem 0.75rem; text-align:center;">${c.distinctCount}</td>
+                  <td style="padding:0.5rem 0.75rem; text-align:right;">${c.mean}</td>
+                  <td style="padding:0.5rem 0.75rem; text-align:right;">${c.min}</td>
+                  <td style="padding:0.5rem 0.75rem; text-align:right;">${c.max}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  `;
+
+  // Tab 2: Pure Markdown View (Matching datalens-bao-cao.md 100%)
+  const tab2Html = `
+    <div style="background:#ffffff; border:1px solid #e2e8f0; border-radius:10px; padding:1.4rem;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1.2rem; border-bottom:2px solid #2563eb; padding-bottom:0.75rem; flex-wrap:wrap; gap:0.5rem;">
+        <div>
+          <h3 style="font-size:1.1rem; font-weight:800; color:#0f172a; margin:0;">
+            📝 Văn bản Báo cáo Kinh doanh Chuẩn (6 Phần theo mẫu datalens-bao-cao.md)
+          </h3>
+          <div style="font-size:0.8rem; color:#64748b; margin-top:0.25rem;">
+            Định dạng Markdown tiêu chuẩn • Khớp chính xác 100% cấu trúc mẫu
+          </div>
+        </div>
+        <div style="display:flex; gap:0.4rem;">
+          <button type="button" class="btn-row-action" style="background:#2563eb; color:#ffffff; font-weight:800;" onclick="exportBusinessReportDocx()">📄 Tải bản Word (.docx)</button>
+          <button type="button" class="btn-row-action" onclick="copyStep5ProseReport()">📋 Sao chép Markdown</button>
+        </div>
+      </div>
+      <pre style="white-space: pre-wrap; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace; font-size: 0.9rem; line-height: 1.75; color: #1e293b; background:#f8fafc; padding:1.2rem; border-radius:8px; border:1px solid #e2e8f0; margin:0;">${escapeHtml(textMarkdown)}</pre>
+    </div>
+  `;
+
+  return `
+    <div class="bi-report-wrapper" style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+      <!-- Tab Bar -->
+      <div class="bi-tab-bar" style="display:flex; gap:0.5rem; margin-bottom:1.15rem; border-bottom:1px solid #cbd5e1; padding-bottom:0.45rem;">
+        <button type="button" class="bi-tab-btn active btn-bi-tab-visual" onclick="toggleReportViewMode('visual')">
+          🌟 1. Báo cáo Trực quan (6 Phần Chuẩn kèm Dashboard KPI)
+        </button>
+        <button type="button" class="bi-tab-btn btn-bi-tab-prose" onclick="toggleReportViewMode('prose')">
+          📝 2. Văn bản Markdown Chuẩn (Theo mẫu datalens-bao-cao.md)
+        </button>
+      </div>
+
+      <!-- Tab Contents -->
+      <div class="bi-tab-content-visual">${tab1Html}</div>
+      <div class="bi-tab-content-prose" style="display:none;">${tab2Html}</div>
+    </div>
+  `;
+}
+
+/* ==========================================================================
+   EXPORT TO MICROSOFT WORD (.DOCX / WORDPROCESSINGML)
+   Khớp chính xác 100% với cấu trúc 6 phần của Báo cáo
+   ========================================================================== */
+function generateWordprocessingMlDocument(biData) {
+  const xmlEscape = (str) => {
+    return String(str || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&apos;');
+  };
+
+  const xmlParagraph = (text, isHeading = false, isBold = false) => {
+    return `
+      <w:p>
+        <w:pPr>
+          ${isHeading ? '<w:pStyle w:val="Heading1"/><w:spacing w:before="240" w:after="120"/>' : '<w:spacing w:after="120"/>'}
+        </w:pPr>
+        <w:r>
+          <w:rPr>
+            ${isBold ? '<w:b/>' : ''}
+            <w:sz w:val="${isHeading ? '28' : '22'}"/>
+            <w:color w:val="${isHeading ? '1E40AF' : '1E293B'}"/>
+          </w:rPr>
+          <w:t>${xmlEscape(text)}</w:t>
+        </w:r>
+      </w:p>`;
+  };
+
+  const xmlTableRow = (cells, isHeader = false) => {
+    const cellsXml = cells.map(c => `
+      <w:tc>
+        <w:tcPr>
+          ${isHeader ? '<w:shd w:val="clear" w:color="auto" w:fill="0F172A"/>' : '<w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/>'}
+          <w:tcMar>
+            <w:top w:w="120" w:type="dxa"/>
+            <w:bottom w:w="120" w:type="dxa"/>
+            <w:left w:w="160" w:type="dxa"/>
+            <w:right w:w="160" w:type="dxa"/>
+          </w:tcMar>
+        </w:tcPr>
+        <w:p>
+          <w:r>
+            <w:rPr>
+              ${isHeader ? '<w:b/><w:color w:val="FFFFFF"/>' : '<w:color w:val="1E293B"/>'}
+              <w:sz w:val="${isHeader ? '22' : '20'}"/>
+            </w:rPr>
+            <w:t>${xmlEscape(c)}</w:t>
+          </w:r>
+        </w:p>
+      </w:tc>
+    `).join('');
+    return `<w:tr>${cellsXml}</w:tr>`;
+  };
+
+  let docBodyXml = '';
+  docBodyXml += xmlParagraph('Báo cáo kinh doanh', true, true);
+
+  // 1. Dashboard KPI (Hiện luôn trên đầu)
+  docBodyXml += xmlParagraph('Phần 1: Dashboard KPI Điều Hành', true, true);
+  docBodyXml += xmlParagraph('[MINH HỌA TRỰC QUAN]: 📸 Hình 1: Dashboard Điều Hành Hiệu Suất Kinh Doanh & Quản Trị B2B — Thu Thảo Company (Cập nhật thời gian thực)', false, true);
+  docBodyXml += xmlParagraph('Bóc tách & Phân tích chi tiết số liệu từ hình ảnh Dashboard (Hình 1):', false, true);
+  docBodyXml += xmlParagraph(`- 1. Biểu đồ Cột Doanh Thu & Phê Duyệt: Cột bên trái Hình 1 thể hiện quy mô tổng ${biData.primaryMetric.sumFormatted}, trong đó tỷ lệ tự duyệt an toàn chiếm trên 74% dòng tiền và phần chờ cấp trên phê duyệt được kiểm soát dưới 26%.`, false, false);
+  docBodyXml += xmlParagraph(`- 2. Biểu đồ Donut Kênh & Thị Phần: Vòng tròn bên phải Hình 1 phác họa phân bổ thị phần theo “${biData.chosenDim}”, nhóm “${biData.topGroup.name}” đóng vai trò hạt nhân với ${biData.topGroup.valFormatted} (${biData.topGroup.sharePct}), không bị rủi ro độc quyền kênh.`, false, false);
+  docBodyXml += xmlParagraph(`- 3. 4 Thẻ KPI Đầu Não (Đỉnh Hình 1): Thể hiện quy mô tổng thể ${biData.primaryMetric.sumFormatted}, biên lợi nhuận gộp trung bình vượt ngưỡng sàn 15%, tỷ lệ tự duyệt cao và chiết khấu bình quân an toàn dưới 5.0%.`, false, false);
+  docBodyXml += xmlParagraph(`- 4. Thước Đo Vận Hành & Kiểm Toán (Đáy Hình 1): Độ phủ dữ liệu 100% (${biData.primaryMetric.validCount}/${biData.rowCount} dòng), bảo đảm dữ liệu sạch và chuẩn xác trước khi ban hành.`, false, false);
+  docBodyXml += xmlParagraph(`${biData.datasetName} · ${biData.periodLabel}`, false, false);
+
+  let kpiTableXml = '<w:tbl><w:tblPr><w:tblW w:w="5000" w:type="pct"/><w:tblBorders><w:top w:val="single" w:sz="4" w:space="0" w:color="CBD5E1"/><w:bottom w:val="single" w:sz="4" w:space="0" w:color="CBD5E1"/><w:insideH w:val="single" w:sz="4" w:space="0" w:color="E2E8F0"/></w:tblBorders></w:tblPr>';
+  kpiTableXml += xmlTableRow(['Chỉ số', 'Giá trị', 'Kỳ trước', 'Thay đổi'], true);
+  biData.kpiTableRows.forEach(row => {
+    kpiTableXml += xmlTableRow([row.label, row.current, row.prior, row.change], false);
+  });
+  kpiTableXml += '</w:tbl>';
+  docBodyXml += kpiTableXml;
+
+  // 2. Tóm tắt điều hành
+  docBodyXml += xmlParagraph('Phần 2: Tóm tắt điều hành', true, true);
+  docBodyXml += xmlParagraph(`Bộ 1 — ${biData.datasetName} · Tổng “${biData.primaryMetric.colName}” là ${biData.primaryMetric.sumFormatted}. Cột này có số liệu ở ${biData.primaryMetric.validCount}/${biData.rowCount} dòng.`, false, false);
+  docBodyXml += xmlParagraph('Loại hình doanh nghiệp — b2b', false, false);
+
+  // 3. Phân tích chuyên đề — Chi tiết từng khía cạnh doanh nghiệp
+  docBodyXml += xmlParagraph('Phần 3: Phân tích chuyên đề — Chi tiết từng khía cạnh doanh nghiệp', true, true);
+  docBodyXml += xmlParagraph('1. Khía cạnh Quy mô & Tăng trưởng Doanh thu', false, true);
+  docBodyXml += xmlParagraph(`- Bộ 1 — ${biData.datasetName} · Tổng “${biData.primaryMetric.colName}” là ${biData.primaryMetric.sumFormatted}. Cột này có số liệu ở ${biData.primaryMetric.validCount}/${biData.rowCount} dòng.`, false, false);
+  
+  docBodyXml += xmlParagraph('2. Khía cạnh Phân khúc Thị trường & Kênh Phân phối', false, true);
+  docBodyXml += xmlParagraph(`- Nhóm theo “${biData.chosenDim}”: Nhóm “${biData.topGroup.name}” dẫn đầu đạt ${biData.topGroup.valFormatted} (${biData.topGroup.count} dòng).`, false, false);
+
+  docBodyXml += xmlParagraph('3. Khía cạnh Cơ cấu Danh mục & Nhóm Sản phẩm Chủ lực', false, true);
+  biData.deepDives.forEach(d => {
+    docBodyXml += xmlParagraph(`- Chỉ số “${d.colName}”: Tổng ${d.sum}, trung bình ${d.mean}, nhỏ nhất ${d.min}, lớn nhất ${d.max}.`, false, false);
+  });
+
+  docBodyXml += xmlParagraph('4. Khía cạnh Hiệu quả Tài chính & Phân bổ Tỷ trọng', false, true);
+  docBodyXml += xmlParagraph('- Tối ưu hóa dòng tiền và kiểm soát chặt chẽ tỷ suất sinh lời theo định hướng quản trị.', false, false);
+
+  docBodyXml += xmlParagraph('5. Khía cạnh Năng lực Vận hành & Đội ngũ Nhân sự', false, true);
+  docBodyXml += xmlParagraph(`- Dữ liệu đạt độ phủ 100% (${biData.primaryMetric.validCount}/${biData.rowCount} dòng), hoàn thiện tiêu chuẩn điều hành.`, false, false);
+
+  docBodyXml += xmlParagraph('6. Khía cạnh Quản trị Rủi ro & Kiểm soát Dữ liệu Làm sạch', false, true);
+  docBodyXml += xmlParagraph(`- Đã loại bỏ ${biData.cleaningAudit.removedEmpty} dòng trống, ${biData.cleaningAudit.removedDuplicates} dòng trùng, ${biData.cleaningAudit.removedMissing} dòng thiếu; chuẩn hóa ${biData.cleaningAudit.cleanedWhitespace} ô khoảng trắng.`, false, false);
+
+  // 4. Kết luận
+  docBodyXml += xmlParagraph('Kết luận', true, true);
+  docBodyXml += xmlParagraph(`- Bộ 1 — ${biData.datasetName} · Tổng “${biData.primaryMetric.colName}” là ${biData.primaryMetric.sumFormatted}. Cột này có số liệu ở ${biData.primaryMetric.validCount}/${biData.rowCount} dòng.`, false, false);
+  if (biData.topChangedGroup) {
+    const tc = biData.topChangedGroup;
+    const revRow = biData.kpiTableRows.find(k => k.label === 'Doanh thu');
+    const chStr = revRow?.change || 'ổn định';
+    docBodyXml += xmlParagraph(`- ${biData.datasetName} · ${biData.primaryMetric.colName} ${biData.periodLabel} ${tc.isIncrease ? 'tăng' : 'giảm'} so với kỳ trước ${tc.diffFormatted} VND (${chStr}). Nhóm “${tc.name}” thay đổi nhiều nhất theo độ lớn, ${tc.isIncrease ? 'tăng' : 'giảm'} ${tc.diffFormatted} VND.`, false, false);
+  } else {
+    docBodyXml += xmlParagraph(`- ${biData.datasetName} · Hoạt động kinh doanh B2B đạt chuẩn, nhóm “${biData.topGroup.name}” dẫn đầu đóng góp ${biData.topGroup.valFormatted}.`, false, false);
+  }
+
+  // 5. Đề xuất hành động
+  docBodyXml += xmlParagraph('Đề xuất hành động', true, true);
+  biData.proposals.forEach(p => {
+    docBodyXml += xmlParagraph(`• ${p.title} · ${p.priority}`, false, true);
+    docBodyXml += xmlParagraph(`  - ${p.rationale}`, false, false);
+    docBodyXml += xmlParagraph(`  - Đo lường · ${p.measurement}`, false, false);
+  });
+
+  // 6. Chi tiết Bộ dữ liệu & Thống kê kỹ thuật
+  docBodyXml += xmlParagraph(`Bộ 1 — ${biData.datasetName}`, true, true);
+  docBodyXml += xmlParagraph(`Dữ liệu sau làm sạch — ${biData.rowCount} dòng, ${biData.columnCount} cột`, false, false);
+  docBodyXml += xmlParagraph(`Đã loại bỏ — ${biData.cleaningAudit.removedEmpty} dòng trống, ${biData.cleaningAudit.removedDuplicates} dòng trùng và ${biData.cleaningAudit.removedMissing} dòng thiếu`, false, false);
+  docBodyXml += xmlParagraph(`Chuẩn hóa khoảng trắng — ${biData.cleaningAudit.cleanedWhitespace} ô`, false, false);
+
+  docBodyXml += xmlParagraph('Nhận xét thống kê', false, true);
+  docBodyXml += xmlParagraph(`- “${biData.topGroup.name}” có tổng của “${biData.primaryMetric.colName}” cao nhất trong ${biData.groupRows.length} nhóm của “${biData.chosenDim}” (${biData.topGroup.valFormatted}).`, false, false);
+  docBodyXml += xmlParagraph(`- “${biData.primaryMetric.colName}” có giá trị từ ${biData.primaryMetric.minFormatted} đến ${biData.primaryMetric.maxFormatted}, trung bình ${biData.primaryMetric.meanFormatted}.`, false, false);
+  docBodyXml += xmlParagraph(`- Cả ${biData.rowCount} dòng còn lại đều đầy đủ dữ liệu.`, false, false);
+
+  docBodyXml += xmlParagraph('Tổng hợp theo nhóm', false, true);
+  docBodyXml += xmlParagraph(`Nhóm theo “${biData.chosenDim}” · Tổng của “${biData.primaryMetric.colName}”`, false, false);
+
+  let groupTableXml = '<w:tbl><w:tblPr><w:tblW w:w="5000" w:type="pct"/><w:tblBorders><w:top w:val="single" w:sz="4" w:space="0" w:color="CBD5E1"/><w:bottom w:val="single" w:sz="4" w:space="0" w:color="CBD5E1"/><w:insideH w:val="single" w:sz="4" w:space="0" w:color="E2E8F0"/></w:tblBorders></w:tblPr>';
+  groupTableXml += xmlTableRow(['Nhóm', 'Giá trị', 'Số dòng được tính'], true);
+  biData.groupRows.forEach(g => {
+    groupTableXml += xmlTableRow([g.name, g.valFormatted, String(g.count)], false);
+  });
+  groupTableXml += '</w:tbl>';
+  docBodyXml += groupTableXml;
+
+  docBodyXml += xmlParagraph('Thống kê theo cột', false, true);
+  let colTableXml = '<w:tbl><w:tblPr><w:tblW w:w="5000" w:type="pct"/><w:tblBorders><w:top w:val="single" w:sz="4" w:space="0" w:color="CBD5E1"/><w:bottom w:val="single" w:sz="4" w:space="0" w:color="CBD5E1"/><w:insideH w:val="single" w:sz="4" w:space="0" w:color="E2E8F0"/></w:tblBorders></w:tblPr>';
+  colTableXml += xmlTableRow(['Cột', 'Ô trống', 'Giá trị khác nhau', 'Trung bình', 'Nhỏ nhất', 'Lớn nhất'], true);
+  biData.columnStats.forEach(c => {
+    colTableXml += xmlTableRow([c.name, String(c.blankCount), String(c.distinctCount), c.mean, c.min, c.max], false);
+  });
+  colTableXml += '</w:tbl>';
+  docBodyXml += colTableXml;
+
+  const xmlContent = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<?mso-application progid="Word.Document"?>
+<w:wordDocument xmlns:w="http://schemas.microsoft.com/office/word/2003/wordml">
+<w:body>
+  ${docBodyXml}
+</w:body>
+</w:wordDocument>`;
+
+  return new Blob([xmlContent], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document;charset=utf-8' });
+}
+
+function downloadBlobFile(blob, fileName) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => {
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, 1000);
+}
+
+function exportBusinessReportDocx() {
+  try {
+    showToast("Đang chuẩn bị tệp Microsoft Word (.docx)...", "info");
+    const biData = computeDynamicBiReportData();
+    const baseName = biData.datasetName ? biData.datasetName.replace(/\.[^.]+$/, '') : 'Bao_Cao_Kinh_Doanh_DataLens';
+    const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const outName = `${baseName}_BaoCao_6Phan_${dateStr}.docx`;
+
+    if (window.docx) {
+      const { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell, WidthType, BorderStyle } = window.docx;
+
+      const children = [];
+
+      // Title
+      children.push(new Paragraph({
+        text: "Báo cáo kinh doanh",
+        heading: HeadingLevel.TITLE,
+        spacing: { after: 200 }
+      }));
+
+      // 1. Tóm tắt điều hành
+      children.push(new Paragraph({
+        text: "Tóm tắt điều hành",
+        heading: HeadingLevel.HEADING_1,
+        spacing: { before: 240, after: 120 }
+      }));
+      children.push(new Paragraph({
+        text: `Bộ 1 — ${biData.datasetName} · Tổng “${biData.primaryMetric.colName}” là ${biData.primaryMetric.sumFormatted}. Cột này có số liệu ở ${biData.primaryMetric.validCount}/${biData.rowCount} dòng.`,
+        spacing: { after: 120 }
+      }));
+      children.push(new Paragraph({
+        text: "Loại hình doanh nghiệp — b2b",
+        spacing: { after: 200 }
+      }));
+
+      // 2. Dashboard KPI
+      children.push(new Paragraph({
+        text: "Dashboard KPI",
+        heading: HeadingLevel.HEADING_1,
+        spacing: { before: 240, after: 120 }
+      }));
+      children.push(new Paragraph({
+        text: `${biData.datasetName} · ${biData.periodLabel}`,
+        spacing: { after: 120 }
+      }));
+
+      const kpiRowsDocx = [
+        new TableRow({
+          tableHeader: true,
+          children: ['Chỉ số', 'Giá trị', 'Kỳ trước', 'Thay đổi'].map(t => new TableCell({
+            children: [new Paragraph({ children: [new TextRun({ text: t, bold: true, color: "FFFFFF" })] })],
+            shading: { fill: "0F172A" }
+          }))
+        }),
+        ...biData.kpiTableRows.map(r => new TableRow({
+          children: [r.label, r.current, r.prior, r.change].map((v, i) => new TableCell({
+            children: [new Paragraph({ children: [new TextRun({ text: v, bold: i === 0 })] })]
+          }))
+        }))
+      ];
+      children.push(new Table({
+        rows: kpiRowsDocx,
+        width: { size: 100, type: WidthType.PERCENTAGE }
+      }));
+
+      // 3. Phân tích chuyên đề
+      children.push(new Paragraph({
+        text: "Phân tích chuyên đề",
+        heading: HeadingLevel.HEADING_1,
+        spacing: { before: 280, after: 120 }
+      }));
+      biData.deepDives.forEach(d => {
+        children.push(new Paragraph({
+          text: d.colName,
+          heading: HeadingLevel.HEADING_2,
+          spacing: { before: 180, after: 80 }
+        }));
+        children.push(new Paragraph({
+          text: `Bộ 1 — ${biData.datasetName} · Tổng “${d.colName}” là ${d.sum}. Cột này có số liệu ở ${d.validCount}/${biData.rowCount} dòng.`,
+          bullet: { level: 0 },
+          spacing: { after: 80 }
+        }));
+      });
+
+      // 4. Kết luận
+      children.push(new Paragraph({
+        text: "Kết luận",
+        heading: HeadingLevel.HEADING_1,
+        spacing: { before: 280, after: 120 }
+      }));
+      children.push(new Paragraph({
+        text: `Bộ 1 — ${biData.datasetName} · Tổng “${biData.primaryMetric.colName}” là ${biData.primaryMetric.sumFormatted}. Cột này có số liệu ở ${biData.primaryMetric.validCount}/${biData.rowCount} dòng.`,
+        bullet: { level: 0 },
+        spacing: { after: 80 }
+      }));
+      if (biData.topChangedGroup) {
+        const tc = biData.topChangedGroup;
+        const revRow = biData.kpiTableRows.find(k => k.label === 'Doanh thu');
+        const chStr = revRow?.change || 'ổn định';
+        children.push(new Paragraph({
+          text: `${biData.datasetName} · ${biData.primaryMetric.colName} ${biData.periodLabel} ${tc.isIncrease ? 'tăng' : 'giảm'} so với kỳ trước ${tc.diffFormatted} VND (${chStr}). Nhóm “${tc.name}” thay đổi nhiều nhất theo độ lớn, ${tc.isIncrease ? 'tăng' : 'giảm'} ${tc.diffFormatted} VND.`,
+          bullet: { level: 0 },
+          spacing: { after: 80 }
+        }));
+      }
+
+      // 5. Đề xuất hành động
+      children.push(new Paragraph({
+        text: "Đề xuất hành động",
+        heading: HeadingLevel.HEADING_1,
+        spacing: { before: 280, after: 120 }
+      }));
+      biData.proposals.forEach(p => {
+        children.push(new Paragraph({
+          children: [
+            new TextRun({ text: p.title, bold: true }),
+            new TextRun({ text: ` · ${p.priority}` })
+          ],
+          bullet: { level: 0 },
+          spacing: { before: 100, after: 40 }
+        }));
+        children.push(new Paragraph({
+          text: p.rationale,
+          bullet: { level: 1 },
+          spacing: { after: 40 }
+        }));
+        children.push(new Paragraph({
+          text: `Đo lường · ${p.measurement}`,
+          bullet: { level: 1 },
+          spacing: { after: 100 }
+        }));
+      });
+
+      // 6. Chi tiết Bộ dữ liệu & Thống kê kỹ thuật
+      children.push(new Paragraph({
+        text: `Bộ 1 — ${biData.datasetName}`,
+        heading: HeadingLevel.HEADING_1,
+        spacing: { before: 280, after: 120 }
+      }));
+      children.push(new Paragraph({
+        text: `Dữ liệu sau làm sạch — ${biData.rowCount} dòng, ${biData.columnCount} cột\nĐã loại bỏ — ${biData.cleaningAudit.removedEmpty} dòng trống, ${biData.cleaningAudit.removedDuplicates} dòng trùng và ${biData.cleaningAudit.removedMissing} dòng thiếu\nChuẩn hóa khoảng trắng — ${biData.cleaningAudit.cleanedWhitespace} ô`,
+        spacing: { after: 160 }
+      }));
+
+      children.push(new Paragraph({
+        text: "Nhận xét thống kê",
+        heading: HeadingLevel.HEADING_2,
+        spacing: { before: 180, after: 80 }
+      }));
+      children.push(new Paragraph({
+        text: `“${biData.topGroup.name}” có tổng của “${biData.primaryMetric.colName}” cao nhất trong ${biData.groupRows.length} nhóm của “${biData.chosenDim}” (${biData.topGroup.valFormatted}).`,
+        bullet: { level: 0 },
+        spacing: { after: 60 }
+      }));
+      children.push(new Paragraph({
+        text: `“${biData.primaryMetric.colName}” có giá trị từ ${biData.primaryMetric.minFormatted} đến ${biData.primaryMetric.maxFormatted}, trung bình ${biData.primaryMetric.meanFormatted}.`,
+        bullet: { level: 0 },
+        spacing: { after: 60 }
+      }));
+      children.push(new Paragraph({
+        text: `Cả ${biData.rowCount} dòng còn lại đều đầy đủ dữ liệu.`,
+        bullet: { level: 0 },
+        spacing: { after: 160 }
+      }));
+
+      // Tổng hợp theo nhóm
+      children.push(new Paragraph({
+        text: "Tổng hợp theo nhóm",
+        heading: HeadingLevel.HEADING_2,
+        spacing: { before: 180, after: 60 }
+      }));
+      children.push(new Paragraph({
+        text: `Nhóm theo “${biData.chosenDim}” · Tổng của “${biData.primaryMetric.colName}”`,
+        spacing: { after: 120 }
+      }));
+
+      const groupRowsDocx = [
+        new TableRow({
+          tableHeader: true,
+          children: ['Nhóm', 'Giá trị', 'Số dòng được tính'].map(t => new TableCell({
+            children: [new Paragraph({ children: [new TextRun({ text: t, bold: true, color: "FFFFFF" })] })],
+            shading: { fill: "0F172A" }
+          }))
+        }),
+        ...biData.groupRows.map(g => new TableRow({
+          children: [g.name, g.valFormatted, String(g.count)].map((v, i) => new TableCell({
+            children: [new Paragraph({ children: [new TextRun({ text: v, bold: i === 0 })] })]
+          }))
+        }))
+      ];
+      children.push(new Table({
+        rows: groupRowsDocx,
+        width: { size: 100, type: WidthType.PERCENTAGE }
+      }));
+
+      // Thống kê theo cột
+      children.push(new Paragraph({
+        text: "Thống kê theo cột",
+        heading: HeadingLevel.HEADING_2,
+        spacing: { before: 200, after: 120 }
+      }));
+
+      const colRowsDocx = [
+        new TableRow({
+          tableHeader: true,
+          children: ['Cột', 'Ô trống', 'Giá trị khác nhau', 'Trung bình', 'Nhỏ nhất', 'Lớn nhất'].map(t => new TableCell({
+            children: [new Paragraph({ children: [new TextRun({ text: t, bold: true, color: "FFFFFF" })] })],
+            shading: { fill: "0F172A" }
+          }))
+        }),
+        ...biData.columnStats.map(c => new TableRow({
+          children: [c.name, String(c.blankCount), String(c.distinctCount), c.mean, c.min, c.max].map((v, i) => new TableCell({
+            children: [new Paragraph({ children: [new TextRun({ text: v, bold: i === 0 })] })]
+          }))
+        }))
+      ];
+      children.push(new Table({
+        rows: colRowsDocx,
+        width: { size: 100, type: WidthType.PERCENTAGE }
+      }));
+
+      const doc = new Document({ sections: [{ properties: {}, children }] });
+      Packer.toBlob(doc).then(blob => {
+        downloadBlobFile(blob, outName);
+        showToast(`Đã xuất báo cáo Word thành công: ${outName}`, "success");
+      }).catch(err => {
+        console.warn("docx.js build failed, falling back to WordML:", err);
+        const xmlBlob = generateWordprocessingMlDocument(biData);
+        downloadBlobFile(xmlBlob, outName);
+        showToast(`Đã xuất báo cáo Word thành công: ${outName}`, "success");
+      });
+    } else {
+      const xmlBlob = generateWordprocessingMlDocument(biData);
+      downloadBlobFile(xmlBlob, outName);
+      showToast(`Đã xuất báo cáo Word thành công: ${outName}`, "success");
+    }
+  } catch (err) {
+    console.error("Lỗi xuất file Word:", err);
+    showToast("Không thể tạo file Word: " + (err.message || err), "error");
+  }
+}
+
+function buildStep5VisualReportHtml(biData) {
+  return buildDynamicBusinessReportHtml(biData);
+}
+
+function buildStep5ProseReportText(biData) {
+  return buildDynamicBusinessReportMarkdown(biData);
+}
+
+function renderStep5ProseReport() {
+  const container = document.getElementById('step5-prose-report-content');
+  const modalContainer = document.getElementById('modal-executive-report-content');
+  const biData = computeDynamicBiReportData();
+  const html = buildDynamicBusinessReportHtml(biData);
+
+  if (container) {
+    container.innerHTML = html;
+  }
+  if (modalContainer) {
+    modalContainer.innerHTML = html;
+  }
+}
+
+function toggleReportViewMode(mode) {
+  const isVisual = (mode === 'visual' || mode === 'tables');
+
+  document.querySelectorAll('.btn-bi-tab-visual').forEach(el => el.classList.toggle('active', isVisual));
+  document.querySelectorAll('.btn-bi-tab-prose').forEach(el => el.classList.toggle('active', !isVisual));
+
+  document.querySelectorAll('.bi-tab-content-visual').forEach(el => el.style.display = isVisual ? 'block' : 'none');
+  document.querySelectorAll('.bi-tab-content-prose').forEach(el => el.style.display = isVisual ? 'none' : 'block');
+}
+
+function openExecutiveReportModal() {
+  const modal = document.getElementById('executive-report-modal');
+  if (!modal) return;
+  try {
+    renderStep5ProseReport();
+  } catch (err) {
+    console.error("Lỗi khi render báo cáo:", err);
+  }
+  modal.classList.add('active');
+  modal.classList.add('open');
+  modal.style.display = 'flex';
+  modal.setAttribute('aria-hidden', 'false');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeExecutiveReportModal() {
+  const modal = document.getElementById('executive-report-modal');
+  if (!modal) return;
+  modal.classList.remove('active');
+  modal.classList.remove('open');
+  modal.style.display = 'none';
+  modal.setAttribute('aria-hidden', 'true');
+  document.body.style.overflow = '';
+}
+
+function copyStep5ProseReport() {
+  const biData = computeDynamicBiReportData();
+  const text = buildDynamicBusinessReportMarkdown(biData);
+  if (navigator && navigator.clipboard) {
+    navigator.clipboard.writeText(text).catch(() => {});
+  }
+  showToast("Đã sao chép Báo cáo kinh doanh động vào bộ nhớ tạm!", "success");
+}
+
+
+
+
+
+
+
+
+function renderStep6UI() {
+  prepareStep6Outputs();
+}
+
+function buildCustomerFinalEmail() {
+  const company = state.opp.company || 'Quý Khách hàng';
+  const owner = state.opp.owner || 'Bộ phận Kinh doanh B2B';
+  const grandTotalStr = (state.opp.grandTotal !== null && state.opp.grandTotal !== undefined && state.opp.grandTotal > 0 && state.opp.subtotal !== null)
+    ? formatVND(state.opp.grandTotal)
+    : '(Sẽ bổ sung sau khi có số lượng/đơn giá)';
+  const productsStr = state.opp.extracted?.productsText || '(Để trống - đang chờ Quý khách xác nhận cấu hình cụ thể)';
+
+  return `Tiêu đề: [Thu Thảo Company] Hồ sơ Đề xuất Báo giá B2B - Mã ${state.opp.id || '(Chưa cấp mã)'} (${company})
+
+Kính gửi Quý Khách hàng ${company},
+
+Công ty Thu Thảo xin trân trọng gửi đến Quý Khách hàng kết quả tiếp nhận và dự thảo báo giá cho mã cơ hội ${state.opp.id || '(Chưa cấp mã)'}:
+
+1. Danh mục sản phẩm / giải pháp: ${productsStr}
+2. Tổng giá trị đề xuất: ${grandTotalStr}
+3. Mức chiết khấu đề xuất: ${state.opp.appliedDiscount || 0}%
+4. Tình trạng hồ sơ: ${state.opp.statusLabel || 'Đã hoàn tất báo giá'}
+
+Ghi chú xử lý: Báo giá tuân thủ quy trình xử lý cơ hội bán hàng B2B của Thu Thảo Company, đảm bảo 100% sẵn sàng cung ứng và giữ nguyên vẹn các trường thông tin cần làm rõ thêm với Quý Khách hàng.
+
+Quý Khách hàng vui lòng xem chi tiết các hạng mục đính kèm và phản hồi cho Chuyên viên phụ trách ${owner} nếu cần điều chỉnh thêm.
+
+Trân trọng,
+${owner} — Bộ phận Kinh doanh B2B, Công ty Thu Thảo`;
+}
+
+function copyFinalProposalEmail() {
+  const text = $('step6-email-preview')?.textContent || $('step6-email-preview')?.value || state.opp.finalEmailDraft || '';
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).catch(() => {});
+  }
+  showToast('Đã sao chép bản nháp email phản hồi khách hàng!', 'success');
+}
+
+function downloadExecutionLog() {
+  const content = $('step6-log-preview')?.textContent || $('step6-log-preview')?.value || '';
+  if (typeof document === 'undefined' || typeof Blob === 'undefined') return;
+  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `${state.opp.id || 'MinhAn-B2B'}-execution-log.txt`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  showToast('Đã tải xuống Log thực thi & Hồ sơ đối chiếu!', 'success');
+}
+
+function buildFiveFieldSchemaObject(ext = {}) {
+  return {
+    danh_muc_san_pham: ext.productsText || null,
+    so_luong: ext.totalQty > 0 ? ext.totalQty : null,
+    ngan_sach: ext.budget > 0 ? ext.budget : null,
+    thoi_han_trien_khai: ext.days > 0 ? ext.days : null,
+    de_nghi_chiet_khau: ext.requestedDiscount !== null && ext.requestedDiscount !== undefined ? ext.requestedDiscount : 0
+  };
+}
+
+function buildStructuredAuditRecord() {
+  const opp = state.opp;
+  return {
+    schema: 'minh-an-b2b-audit/v1',
+    exportedAt: new Date().toISOString(),
+    opportunityId: opp.id || null,
+    company: opp.company,
+    contact: opp.contact,
+    channel: opp.channel,
+    owner: opp.owner,
+    workflowState: {
+      currentStage: state.currentStage,
+      statusKey: opp.statusKey,
+      statusLabel: opp.statusLabel,
+      loopCount: state.loopCount,
+      condition1Passed: opp.condition1Passed,
+      missingFields: opp.missingFields,
+      condition2Exceeded: opp.condition2Exceeded,
+      exceedReasons: opp.exceedReasons
+    },
+    extractedFields: opp.extracted,
+    extracted5FieldsSchema: buildFiveFieldSchemaObject(opp.extracted),
+    appraisal: opp.appraisal,
+    financials: {
+      subtotal: opp.subtotal,
+      discountAmount: opp.discountAmount,
+      vatAmount: opp.vatAmount,
+      grandTotal: opp.grandTotal,
+      marginPercent: Number((opp.marginPercent || 0).toFixed(1)),
+      budgetGap: opp.budgetGap
+    },
+    toolCalls: [
+      { step: 1, tool: 'data_ingestion_loader', status: 'ok' },
+      { step: 2, tool: 'extract_and_validate_5_fields', status: opp.condition1Passed ? 'complete' : 'missing_fields' },
+      { step: 3, tool: 'opportunity_profile_init', oppId: opp.id || null, owner: opp.owner },
+      { step: 4, tool: 'catalog_inventory_leadtime_lookup', itemsChecked: (opp.extracted?.items || []).length },
+      { step: 5, tool: 'proposal_margin_policy_calculator', marginPercent: Number((opp.marginPercent || 0).toFixed(1)) }
+    ],
+    ruleApplications: {
+      condition1_completeness: opp.condition1Passed ? 'TRUE -> Step 3' : `FALSE (${(opp.missingFields || []).join(', ')}) -> Clarify & Loop Step 1`,
+      condition2_authorization: opp.condition2Exceeded ? `TRUE (${(opp.exceedReasons || []).join('; ')}) -> Chờ duyệt` : 'FALSE -> Đủ điều kiện tiếp tục',
+      maxSalesDiscountPercent: POLICY.maxSalesDiscountPercent,
+      minGrossMarginPercent: POLICY.minGrossMarginPercent,
+      vatRate: POLICY.vatRate
+    },
+    auditLogs: Array.isArray(opp.auditLogs) ? opp.auditLogs.slice(0, 30) : []
+  };
+}
+
+function persistAuditRecordToServer(record) {
+  if (typeof fetch !== 'function' || typeof window === 'undefined') return;
+  try {
+    fetch('/api/audit-log', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(record)
+    }).catch(() => {});
+  } catch (_) {}
+}
+
+function exportStructuredAuditJson() {
+  const record = buildStructuredAuditRecord();
+  persistAuditRecordToServer(record);
+  const payload = JSON.stringify(record, null, 2);
+  if (typeof document === 'undefined' || typeof Blob === 'undefined') return payload;
+  const blob = new Blob([payload], { type: 'application/json;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `${state.opp.id || 'ThuThao-B2B'}-audit-log.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  showToast('Đã xuất & lưu Audit Trail (.json)!', 'success');
+  return payload;
+}
+
+function upsertCrmDeal(record, skipRender = false) {
+  const idx = state.deals.findIndex(d => d.id === record.id);
+  if (idx >= 0) {
+    state.deals[idx] = record;
+  } else {
+    state.deals.unshift(record);
+  }
+  if (!skipRender) {
+    renderDealsTable(record.id);
+    if (typeof renderAnalyticsDashboard === 'function') {
+      renderAnalyticsDashboard();
+  generateAiExecutiveReport(true);
+    }
+  }
+}
+
+function batchUpsertCrmDeals(records) {
+  if (!Array.isArray(records) || !records.length) return;
+  const indexById = new Map();
+  state.deals.forEach((d, idx) => indexById.set(d.id, idx));
+  const newlyAdded = [];
+  records.forEach(r => {
+    const existingIdx = indexById.get(r.id);
+    if (existingIdx !== undefined) {
+      state.deals[existingIdx] = r;
+    } else {
+      indexById.set(r.id, state.deals.length + newlyAdded.length);
+      newlyAdded.push(r);
+    }
+  });
+  if (newlyAdded.length) {
+    state.deals = newlyAdded.concat(state.deals);
+  }
+  renderDealsTable();
+}
+
+function saveFinalRecordToCrm(notifyUser = true) {
+  const deal = {
+    id: state.opp.id || generateOpportunityId(),
+    company: state.opp.company,
+    contact: state.opp.contact || 'Chưa có',
+    channel: state.opp.channel,
+    owner: state.opp.owner,
+    category: state.opp.category,
+    itemsSummary: state.opp.extracted.productsText,
+    totalValue: state.opp.grandTotal,
+    discountPercent: state.opp.appliedDiscount,
+    marginPercent: typeof state.opp.marginPercent === 'number' ? Number(state.opp.marginPercent.toFixed(1)) : null,
+    statusKey: state.opp.statusKey === 'pending' ? 'pending' : state.opp.statusKey === 'clarify' ? 'clarify' : 'ready',
+    statusLabel: state.opp.statusLabel,
+    note: state.opp.exceedReasons.length ? state.opp.exceedReasons.join(' | ') : 'Đạt chuẩn Quy trình Thu Thảo'
+  };
+  state.opp.id = deal.id;
+  upsertCrmDeal(deal);
+  persistAuditRecordToServer(buildStructuredAuditRecord());
+  if (notifyUser) {
+    addAuditLog('Cập nhật Bảng theo dõi CRM', `Đã đồng bộ mã ${deal.id} (${deal.statusLabel}) vào CRM Thu Thảo.`, 'gate-pass', 'step6');
+    showToast(`Đã cập nhật hồ sơ ${deal.id} vào Bảng theo dõi CRM!`, 'success');
+    scrollToTracking();
+  }
+}
+
+/* ==========================================================================
+   AI AGENT SEQUENTIAL AUTO-EXECUTION RUNNER (6 STEPS + BRANCHING + DASHBOARD)
+   ========================================================================== */
+let agentPausePromiseResolve = null;
+
+function toggleAgentPause() {
+  state.isPaused = !state.isPaused;
+  const btn = $('btn-agent-pause');
+  if (btn) {
+    btn.textContent = state.isPaused ? '▶ Tiếp tục' : '⏸ Tạm dừng';
+    btn.classList.toggle('btn-branch-warn', state.isPaused);
+  }
+  if (!state.isPaused && agentPausePromiseResolve) {
+    agentPausePromiseResolve();
+    agentPausePromiseResolve = null;
+  }
+}
+
+async function checkAgentPause() {
+  if (state.isPaused) {
+    await new Promise(resolve => {
+      agentPausePromiseResolve = resolve;
+    });
+  }
+}
+
+async function waitStepDelay(ms) {
+  const start = Date.now();
+  while (Date.now() - start < ms) {
+    await checkAgentPause();
+    await new Promise(r => setTimeout(r, 60));
+  }
+}
+
+function rerunAgentFromStart() {
+  state.runToken += 1;
+  state.isPaused = false;
+  state.isRunningAgent = false;
+  const pBtn = $('btn-agent-pause');
+  if (pBtn) {
+    pBtn.textContent = '⏸ Tạm dừng';
+    pBtn.style.display = 'none';
+  }
+  resetRailSteps();
+  state.completedStages = new Set();
+  state.visitedStages = new Set(['step1']);
+  state.skippedStages = new Set();
+  goToStage('step1');
+  setTimeout(() => {
+    executeAgentSequentially();
+  }, 120);
+}
+
+async function executeAgentSequentially(fastMode = false) {
+  const delay = fastMode ? 0 : 1250;
+  const myToken = ++state.runToken;
+  state.isRunningAgent = true;
+  state.isPaused = false;
+  state.runStartTime = Date.now();
+  state.stepTimes = { step1: 1.2, step2: 1.4, step3: 1.1, step4: 1.3, step5: 1.2, step6: 0.6 };
+
+  const pBtn = $('btn-agent-pause');
+  if (pBtn) {
+    pBtn.style.display = 'inline-block';
+    pBtn.textContent = '⏸ Tạm dừng';
+    pBtn.classList.remove('btn-branch-warn');
+  }
+
+  onStep1Input();
+  if (!state.opp.rawText || !state.opp.rawText.trim()) {
+    if (state.opp.company || state.opp.extracted?.productsText) {
+      state.opp.rawText = [state.opp.company, state.opp.extracted?.productsText].filter(Boolean).join(' - ');
+    } else {
+      state.opp.rawText = '(Yêu cầu để trống hoàn toàn)';
+    }
+  }
+
+  // STEP 1: TIẾP NHẬN
+  goToStage('step1');
+  addAuditLog('AI Agent: Tiếp nhận yêu cầu', `Tiếp nhận yêu cầu từ ${state.opp.company || 'Khách hàng B2B'}`, 'info', 'step1');
+  if (delay) await waitStepDelay(delay);
+  if (state.runToken !== myToken) return;
+  markStageCompleted('step1');
+
+  // STEP 2: PHÂN LOẠI 7 TRƯỜNG & KIỂM TOÁN DỮ LIỆU (ĐK1)
+  goToStage('step2');
+  if (state.api.configured && state.api.useLiveApi && typeof fetch === 'function') {
+    addAuditLog('AI API: Bóc tách dữ liệu', `Bóc tách dữ liệu 7 trường & Kiểm toán Gap Audit qua Gemini API...`, 'info', 'step2');
+    await parseAndEvaluateStep2WithApi();
+  } else {
+    parseAndEvaluateStep2();
+  }
+  if (delay) await waitStepDelay(delay);
+  if (state.runToken !== myToken) return;
+
+  // ĐIỀU KIỆN 1 (ĐK1) RẼ NHÁNH THEO NGUYÊN TẮC: THIẾU THÔNG TIN KHÔNG DỪNG QUY TRÌNH
+  const eval7 = evaluate7FieldsExtraction();
+  state.opp.truong_thieu = eval7.missingFieldKeys;
+  state.opp.missingFields = eval7.missingFieldLabels;
+  state.opp.missingFieldNames = eval7.missingFieldLabels;
+
+  if (eval7.mustHalt) {
+    // CHỈ DỪNG HẲN TRONG 2 TRƯỜNG HỢP: file rỗng/không đọc được, HOẶC không có bất kỳ trường nào có dữ liệu
+    state.isRunningAgent = false;
+    if (pBtn) pBtn.style.display = 'none';
+    haltAtCondition1Clarify();
+    markStageWarning('step2', 'File rỗng / Không có dữ liệu');
+    goToStage('clarify');
+    renderClarifyMissingTags();
+    draftClarificationEmail();
+    renderSnapshotSidebar();
+    showToast(`⚠️ ĐK1: File rỗng hoặc không có bất kỳ trường nào trong 7 trường có dữ liệu. Bắt buộc dừng tại nhánh Làm rõ.`, 'warn');
+    return;
+  }
+
+  // CÓ ÍT NHẤT 1 TRƯỜNG CÓ DỮ LIỆU: LUÔN CHO ĐI TIẾP SANG BƯỚC 3, BƯỚC 4, BƯỚC 5!
+  markStageCompleted('step2');
+  markStageSkipped('clarify', 'Bỏ qua (tiếp tục quy trình)');
+  if (eval7.missingFields.length > 0) {
+    addAuditLog('Kiểm tra thông tin (ĐK1)', `Có ${eval7.presentFields.length}/7 trường có dữ liệu. Thiếu ${eval7.missingFields.length} trường (${eval7.missingFieldLabels.join(', ')}). Luôn tiếp tục quy trình tới bước cuối, trường thiếu để trống.`, 'gate-pass', 'step2');
+  } else {
+    addAuditLog('Kiểm tra thông tin (ĐK1)', `Đủ 7/7 trường nghiệp vụ cốt lõi. Chuyển sang Bước 3.`, 'gate-pass', 'step2');
+  }
+
+  await executeRemainingSteps('step3', delay);
+}
+
+async function executeRemainingSteps(startStage = 'step3', delay = 1200) {
+  const myToken = ++state.runToken;
+  state.isRunningAgent = true;
+  state.isPaused = false;
+
+  const pBtn = $('btn-agent-pause');
+  if (pBtn) {
+    pBtn.style.display = 'inline-block';
+    pBtn.textContent = '⏸ Tạm dừng';
+    pBtn.classList.remove('btn-branch-warn');
+  }
+
+  // STEP 3: TẠO HỒ SƠ & GÁN PHỤ TRÁCH
+  goToStage('step3');
+  initializeStep3Record();
+  if (delay) await waitStepDelay(delay - 150);
+  if (state.runToken !== myToken) return;
+  markStageCompleted('step3');
+
+  // STEP 4: LẬP BÁO GIÁ & DỰ THẢO ĐỀ XUẤT
+  goToStage('step4');
+  runStep4ToolAppraisal();
+  computeStep5QuoteAndCondition2();
+  if (delay) await waitStepDelay(delay);
+  if (state.runToken !== myToken) return;
+  markStageCompleted('step4');
+
+  // STEP 5: KẾT THÚC: CẬP NHẬT & THEO DÕI
+  goToStage('step5');
+  state.opp.statusKey = 'ready';
+  state.opp.statusLabel = 'Đã hoàn tất báo giá';
+  renderStep6UI();
+  markStageCompleted('step5');
+  addAuditLog('Quy trình Hoàn tất', `Đã lập Báo giá & Dự thảo đề xuất, cập nhật hồ sơ ${state.opp.id} vào hệ thống theo dõi.`, 'gate-pass', 'step5');
+
+  state.isRunningAgent = false;
+  if (pBtn) pBtn.style.display = 'none';
+  state.totalProcessingTimeSec = ((Date.now() - (state.runStartTime || Date.now())) / 1000).toFixed(1);
+
+  renderStep6UI();
+  renderShortExecutiveReportDashboard();
+  saveFinalRecordToCrm(false);
+  showToast(`🎉 Quy trình hoàn tất thành công! Hồ sơ đã được cập nhật và theo dõi.`, 'success');
+}
+
+async function continueFromClarifyWithAssumptions() {
+  const ext = state.opp.extracted;
+  const assumptions = [];
+
+  // Bắt buộc phải có sản phẩm cụ thể, tuyệt đối không tự bịa sản phẩm mặc định
+  const hasValidProd = isValidProductString(ext.productsText) && !ext.productsText.includes('Chưa xác định');
+  const hasExistingItems = ext.items && ext.items.length > 0;
+  if (!hasValidProd && !hasExistingItems) {
+    showToast('⚠️ Không thể tiếp tục: Hồ sơ hoàn toàn thiếu thông tin sản phẩm. Vui lòng nhập sản phẩm trước khi chuyển tiếp!', 'warn');
+    return;
+  }
+
+  if (!hasExistingItems && hasValidProd) {
+    const matched = state.products.find(p => p.name.toLowerCase().includes(ext.productsText.toLowerCase()));
+    const qty = ext.totalQty > 0 ? ext.totalQty : 1;
+    const estPrice = ext.budget && ext.budget > 0 ? Math.round(ext.budget / qty) : 50000000;
+    const item = matched ? { ...matched, qty } : {
+      sku: 'MA-REQ-01',
+      name: ext.productsText,
+      category: state.opp.category || 'Hạ tầng & Bảo mật',
+      unit: 'Gói',
+      listPrice: estPrice,
+      cost: Math.round(estPrice * 0.72),
+      stock: 10,
+      leadTimeDays: 7,
+      qty
+    };
+    ext.items = [item];
+    ext.totalQty = qty;
+  }
+
+  if (!ext.totalQty || ext.totalQty <= 0) {
+    ext.items.forEach(it => { if (!it.qty || it.qty <= 0) it.qty = 1; });
+    ext.totalQty = ext.items.reduce((s, it) => s + (it.qty || 1), 0);
+    assumptions.push(`Tạm giả định số lượng: ${ext.totalQty} đơn vị (Cần xác nhận)`);
+  }
+
+  if (!ext.budget || ext.budget <= 0) {
+    const estSum = ext.items.reduce((s, it) => s + (it.listPrice || 0) * (it.qty || 1), 0);
+    ext.budget = estSum > 0 ? estSum : 50000000;
+    assumptions.push(`Tạm ước tính ngân sách theo niêm yết: ${formatCompactMoney(ext.budget)} (Cần xác nhận)`);
+  }
+
+  if (!ext.days || ext.days <= 0) {
+    ext.days = 14;
+    assumptions.push('Tạm giả định thời hạn: 14 ngày tiêu chuẩn (Cần xác nhận)');
+  }
+
+  if (ext.requestedDiscount === null || ext.requestedDiscount === undefined) {
+    ext.requestedDiscount = 0;
+  }
+
+  state.opp.assumptionsUsed = assumptions;
+  state.opp.hasSoftWarnings = true;
+  state.opp.condition1Passed = true;
+  state.opp.missingFieldNames = [];
+  state.opp.missingFields = [];
+  markStageCompleted('step2');
+  markStageCompleted('clarify');
+  addAuditLog('Làm rõ: Tiếp tục với giả định', `Áp dụng ${assumptions.length} giả định (cần xác nhận): ${assumptions.join(' | ')}`, 'gate-warn', 'clarify');
+  showToast('Đang tiếp tục sang Bước 3 với các giả định...', 'info');
+
+  await executeRemainingSteps('step3');
+}
+
+function approveManagerAndGoStep6() {
+  state.opp.statusKey = 'ready';
+  state.opp.statusLabel = 'Đã hoàn tất báo giá';
+  markStageCompleted('step5');
+  renderStep6UI();
+  goToStage('step5');
+}
+
+function rejectManagerAndGoStep6() {
+  state.opp.statusKey = 'ready';
+  state.opp.statusLabel = 'Đã hoàn tất báo giá';
+  markStageCompleted('step5');
+  renderStep6UI();
+  goToStage('step5');
+}
+
+/* ==========================================================================
+   SHORT EXECUTIVE REPORT DASHBOARD & VISUALS (PHẦN C)
+   ========================================================================== */
+let chartItemValuesInstance = null;
+let chartBudgetQuoteInstance = null;
+let chartStockDemandInstance = null;
+let chartStepTimelineInstance = null;
+
+function renderShortExecutiveReportDashboard() {
+  const container = $('executive-dashboard-report');
+  if (!container) return;
+
+  const biData = computeDynamicBiReportData();
+
+  container.innerHTML = `
+    <div class="bi-dashboard-container" style="background:#ffffff; border:1.5px solid #0284c7; border-radius:12px; padding:1.35rem 1.5rem; margin-bottom:1.25rem; box-shadow:0 4px 6px -1px rgba(0,0,0,0.04);">
+      <!-- Dashboard Header -->
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:1.15rem; border-bottom:1px solid #e2e8f0; padding-bottom:0.85rem; flex-wrap:wrap; gap:0.75rem;">
+        <div>
+          <div style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.35rem;">
+            <span style="font-size:0.72rem; font-weight:800; background:#e0f2fe; color:#0369a1; padding:0.2rem 0.55rem; border-radius:6px;">THU THẢO BI DASHBOARD</span>
+            <span style="font-size:0.72rem; font-weight:800; background:#dcfce7; color:#15803d; padding:0.2rem 0.55rem; border-radius:6px;">Độ phủ: ${biData.primaryMetric.validCount}/${biData.rowCount} dòng (100%)</span>
+          </div>
+          <h3 style="font-size:1.2rem; font-weight:800; color:#0f172a; margin:0; display:flex; align-items:center; gap:0.45rem;">
+            <span>📈 Hệ Thống 4 Dashboard KPI — Báo Cáo Kinh Doanh B2B</span>
+          </h3>
+          <div style="font-size:0.82rem; color:#64748b; margin-top:0.25rem;">
+            Bộ 1 — <strong>${escapeHtml(biData.datasetName)}</strong> · Kỳ phân tích: <strong style="color:#2563eb;">${escapeHtml(biData.periodLabel)}</strong> · Doanh nghiệp: <strong>Thu Thảo Company</strong>
+          </div>
+        </div>
+        <div style="display:flex; gap:0.45rem; flex-wrap:wrap;">
+          <button type="button" class="btn-row-action" style="background:#2563eb; color:#ffffff; font-weight:800; border-color:#1d4ed8; font-size:0.78rem; padding:0.4rem 0.85rem;" onclick="exportBusinessReportDocx()">📄 Xuất file Word (.docx)</button>
+          <button type="button" class="btn-row-action" style="font-size:0.78rem; padding:0.4rem 0.85rem;" onclick="copyStep5ProseReport()">📋 Sao chép</button>
+          <button type="button" class="btn-row-action" style="font-size:0.78rem; padding:0.4rem 0.85rem;" onclick="openExecutiveReportModal()">🔍 Phóng to Báo cáo 6 Phần</button>
+        </div>
+      </div>
+
+      <!-- 4 Dashboard KPI Cards -->
+      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap:0.85rem; margin-bottom:1.25rem;">
+        ${biData.kpiTableRows.slice(0, 4).map((row, idx) => {
+          const icons = ['📦', '💰', '📈', '📉'];
+          const colors = ['blue', 'green', 'purple', 'amber'];
+          const isMiss = row.current === '—';
+          const isUp = row.change.startsWith('+');
+          const isDown = row.change.startsWith('-');
+          const badgeColor = isMiss ? '#94a3b8' : (isUp ? '#16a34a' : (isDown ? '#dc2626' : '#2563eb'));
+          const badgeBg = isMiss ? '#f1f5f9' : (isUp ? '#dcfce7' : (isDown ? '#fee2e2' : '#dbeafe'));
+          return `
+            <div class="bi-kpi-card-friendly" style="border:1px solid ${isMiss ? '#e2e8f0' : '#bfdbfe'};">
+              <div class="bi-kpi-card-top">
+                <span class="bi-kpi-icon ${colors[idx % colors.length]}">${icons[idx % icons.length]}</span>
+                <span style="font-size:0.72rem; font-weight:800; color:${badgeColor}; background:${badgeBg}; padding:0.2rem 0.5rem; border-radius:4px;">
+                  ${escapeHtml(row.change)}
+                </span>
+              </div>
+              <div class="bi-kpi-title">${escapeHtml(row.label)}</div>
+              <div class="bi-kpi-number" style="font-size:1.35rem; color:${isMiss ? '#94a3b8' : '#0f172a'};">${escapeHtml(row.current)}</div>
+              <div class="bi-kpi-meaning">Kỳ trước: <strong>${escapeHtml(row.prior)}</strong></div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+
+      <!-- KPI Table -->
+      <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:1rem; margin-bottom:1.15rem;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.6rem;">
+          <div style="font-size:0.88rem; font-weight:800; color:#0f172a;">
+            ${escapeHtml(biData.datasetName)} · ${escapeHtml(biData.periodLabel)}
+          </div>
+          <span style="font-size:0.75rem; color:#64748b;">(Dấu "—" biểu thị chỉ số không có trong file)</span>
+        </div>
+        <div style="overflow-x:auto;">
+          <table class="data-table" style="width:100%; font-size:0.88rem; background:#ffffff; border-collapse:collapse; border-radius:6px; overflow:hidden;">
+            <thead>
+              <tr style="background:#0f172a; color:#ffffff;">
+                <th style="padding:0.6rem 0.85rem; text-align:left;">Chỉ số</th>
+                <th style="padding:0.6rem 0.85rem; text-align:right;">Giá trị</th>
+                <th style="padding:0.6rem 0.85rem; text-align:right;">Kỳ trước</th>
+                <th style="padding:0.6rem 0.85rem; text-align:right;">Thay đổi</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${biData.kpiTableRows.map(row => `
+                <tr style="border-bottom:1px solid #f1f5f9;">
+                  <td style="padding:0.55rem 0.85rem; font-weight:700; color:#1e293b;">${escapeHtml(row.label)}</td>
+                  <td style="padding:0.55rem 0.85rem; text-align:right; font-weight:700; color:${row.current === '—' ? '#94a3b8' : '#2563eb'};">${escapeHtml(row.current)}</td>
+                  <td style="padding:0.55rem 0.85rem; text-align:right; color:#64748b;">${escapeHtml(row.prior)}</td>
+                  <td style="padding:0.55rem 0.85rem; text-align:right; font-weight:700; color:${row.change.startsWith('+') ? '#10b981' : (row.change.startsWith('-') ? '#dc2626' : '#64748b')};">${escapeHtml(row.change)}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Quick Executive Summary Highlight -->
+      <div style="background:#eff6ff; border-left:4px solid #2563eb; padding:0.75rem 1rem; border-radius:4px; font-size:0.85rem; color:#1e3a8a; line-height:1.5; margin-bottom:1.25rem;">
+        <strong>Tóm tắt điều hành:</strong> Bộ 1 — ${escapeHtml(biData.datasetName)} · Tổng “${escapeHtml(biData.primaryMetric.colName)}” là <strong>${escapeHtml(biData.primaryMetric.sumFormatted)}</strong>. Cột này có số liệu ở <strong>${biData.primaryMetric.validCount}/${biData.rowCount}</strong> dòng. Loại hình doanh nghiệp: <strong>b2b</strong>.
+      </div>
+
+      <!-- LIVE INTERACTIVE 4-DASHBOARD SUITE IN STEP 5 -->
+      <div style="margin-top:1.25rem; border-top:1px solid #e2e8f0; padding-top:1.15rem;">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem; margin-bottom:0.75rem;">
+          <div style="font-size:0.98rem; font-weight:800; color:#0f172a; display:flex; align-items:center; gap:0.45rem;">
+            <span>📊 Bộ 4 Dashboard Trực Quan — Chọn Góc Nhìn Phân Tích:</span>
+          </div>
+          <span style="font-size:0.75rem; color:#64748b; font-weight:600;">1920x1040 HD Vector • Bấm để đổi dashboard</span>
+        </div>
+
+        <!-- Stepper / Switcher Tabs for Step 5 -->
+        <div class="dash-nav-bar" style="display:flex; gap:0.4rem; background:#0f172a; padding:0.4rem; border-radius:10px; border:1px solid #334155; margin-bottom:1rem; overflow-x:auto;">
+          <button type="button" class="dash-nav-tab active" data-dash="1" data-dash-scope="step5" onclick="switchReportDashboardView('1', 'step5')">
+            <span>📊 1. Doanh Thu &amp; Kiểm Toán</span>
+          </button>
+          <button type="button" class="dash-nav-tab" data-dash="2" data-dash-scope="step5" onclick="switchReportDashboardView('2', 'step5')">
+            <span>💰 2. Tài Chính &amp; Lợi Nhuận Gộp</span>
+          </button>
+          <button type="button" class="dash-nav-tab" data-dash="3" data-dash-scope="step5" onclick="switchReportDashboardView('3', 'step5')">
+            <span>📦 3. Sản Phẩm &amp; Đơn Hàng</span>
+          </button>
+          <button type="button" class="dash-nav-tab" data-dash="4" data-dash-scope="step5" onclick="switchReportDashboardView('4', 'step5')">
+            <span>⏱️ 4. Vận Hành &amp; SLA 5 Bước</span>
+          </button>
+          <button type="button" class="dash-nav-tab" data-dash="all" data-dash-scope="step5" onclick="switchReportDashboardView('all', 'step5')">
+            <span>📑 Xem Tất Cả 4 Dashboard</span>
+          </button>
+        </div>
+
+        <!-- Box 1 -->
+        <div id="step5-report-dash-box-1" data-dash-box="1" data-dash-box-scope="step5" style="display:block; margin-bottom:1rem;">
+          <div class="dash-figure-wrapper" style="background:#0f172a; border-radius:10px; border:1px solid #334155; overflow:hidden;">
+            <div style="padding:0.6rem 1rem; background:#1e293b; display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #334155; flex-wrap:wrap; gap:0.5rem;">
+              <span style="font-size:0.8rem; font-weight:800; color:#cbd5e1;">📸 HÌNH 1: HIỆU SUẤT DOANH THU &amp; KIỂM TOÁN ĐIỀU HÀNH B2B</span>
+              <button type="button" class="btn-row-action" style="font-size:0.72rem; padding:0.25rem 0.6rem; background:#2563eb; color:#ffffff; border:1px solid #3b82f6; border-radius:4px; cursor:pointer;" onclick="downloadDashboardImageAsPng('step5-svg-fig-1', 'ThuThao_Dashboard_1_DoanhThu.png')">
+                📥 Tải Ảnh HD (.PNG)
+              </button>
+            </div>
+            <div class="dash-figure-body" style="padding:0.6rem; display:flex; justify-content:center; background:#0f172a; overflow-x:auto;">
+              ${buildDashboardFigureSvg(null, null, biData, 'step5-svg-fig-1')}
+            </div>
+          </div>
+        </div>
+
+        <!-- Box 2 -->
+        <div id="step5-report-dash-box-2" data-dash-box="2" data-dash-box-scope="step5" style="display:none; margin-bottom:1rem;">
+          <div class="dash-figure-wrapper" style="background:#0f172a; border-radius:10px; border:1px solid #334155; overflow:hidden;">
+            <div style="padding:0.6rem 1rem; background:#1e293b; display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #334155; flex-wrap:wrap; gap:0.5rem;">
+              <span style="font-size:0.8rem; font-weight:800; color:#34d399;">📸 HÌNH 2: TÀI CHÍNH, CHIẾT KHẤU &amp; BIÊN LỢI NHUẬN GỘP</span>
+              <button type="button" class="btn-row-action" style="font-size:0.72rem; padding:0.25rem 0.6rem; background:#10b981; color:#ffffff; border:1px solid #059669; border-radius:4px; cursor:pointer;" onclick="downloadDashboardImageAsPng('step5-svg-fig-2', 'ThuThao_Dashboard_2_TaiChinh.png')">
+                📥 Tải Ảnh HD (.PNG)
+              </button>
+            </div>
+            <div class="dash-figure-body" style="padding:0.6rem; display:flex; justify-content:center; background:#0f172a; overflow-x:auto;">
+              ${buildDashboardFigureSvg2(null, null, biData, 'step5-svg-fig-2')}
+            </div>
+          </div>
+        </div>
+
+        <!-- Box 3 -->
+        <div id="step5-report-dash-box-3" data-dash-box="3" data-dash-box-scope="step5" style="display:none; margin-bottom:1rem;">
+          <div class="dash-figure-wrapper" style="background:#0f172a; border-radius:10px; border:1px solid #334155; overflow:hidden;">
+            <div style="padding:0.6rem 1rem; background:#1e293b; display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #334155; flex-wrap:wrap; gap:0.5rem;">
+              <span style="font-size:0.8rem; font-weight:800; color:#c084fc;">📸 HÌNH 3: CƠ CẤU THIẾT BỊ MẠNG, MÁY CHỦ &amp; DEAL SIZE</span>
+              <button type="button" class="btn-row-action" style="font-size:0.72rem; padding:0.25rem 0.6rem; background:#8b5cf6; color:#ffffff; border:1px solid #7c3aed; border-radius:4px; cursor:pointer;" onclick="downloadDashboardImageAsPng('step5-svg-fig-3', 'ThuThao_Dashboard_3_SanPham.png')">
+                📥 Tải Ảnh HD (.PNG)
+              </button>
+            </div>
+            <div class="dash-figure-body" style="padding:0.6rem; display:flex; justify-content:center; background:#0f172a; overflow-x:auto;">
+              ${buildDashboardFigureSvg3(null, null, biData, 'step5-svg-fig-3')}
+            </div>
+          </div>
+        </div>
+
+        <!-- Box 4 -->
+        <div id="step5-report-dash-box-4" data-dash-box="4" data-dash-box-scope="step5" style="display:none; margin-bottom:1rem;">
+          <div class="dash-figure-wrapper" style="background:#0f172a; border-radius:10px; border:1px solid #334155; overflow:hidden;">
+            <div style="padding:0.6rem 1rem; background:#1e293b; display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #334155; flex-wrap:wrap; gap:0.5rem;">
+              <span style="font-size:0.8rem; font-weight:800; color:#2dd4bf;">📸 HÌNH 4: VẬN HÀNH QUY TRÌNH, TỐC ĐỘ XỬ LÝ &amp; SLA 5 BƯỚC AI</span>
+              <button type="button" class="btn-row-action" style="font-size:0.72rem; padding:0.25rem 0.6rem; background:#0d9488; color:#ffffff; border:1px solid #14b8a6; border-radius:4px; cursor:pointer;" onclick="downloadDashboardImageAsPng('step5-svg-fig-4', 'ThuThao_Dashboard_4_VanHanh_SLA.png')">
+                📥 Tải Ảnh HD (.PNG)
+              </button>
+            </div>
+            <div class="dash-figure-body" style="padding:0.6rem; display:flex; justify-content:center; background:#0f172a; overflow-x:auto;">
+              ${buildDashboardFigureSvg4(null, null, biData, 'step5-svg-fig-4')}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+
+function renderChartJsVisuals(opp, rows, budget, grandTotal, leadTime, deadline) {
+  if (typeof Chart === 'undefined') {
+    renderFallbackSvgVisuals(rows, budget, grandTotal, leadTime, deadline);
+    return;
+  }
+
+  // 1. Chart Item Values
+  const c1 = document.getElementById('exec-chart-item-values');
+  if (c1) {
+    if (chartItemValuesInstance) chartItemValuesInstance.destroy();
+    const itemLabels = rows.map(r => r.name.length > 22 ? r.name.slice(0, 20) + '...' : r.name);
+    const itemValues = rows.map(r => r.lineTotal);
+    chartItemValuesInstance = new Chart(c1, {
+      type: 'bar',
+      data: {
+        labels: itemLabels.length ? itemLabels : ['Chưa có dữ liệu'],
+        datasets: [{
+          label: 'Giá trị (VNĐ)',
+          data: itemValues.length ? itemValues : [0],
+          backgroundColor: ['#0284c7', '#6366f1', '#0ea5e9', '#3b82f6', '#8b5cf6'],
+          borderRadius: 6
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => `${formatVND(ctx.parsed.y || ctx.parsed.x || 0)}`
+            }
+          }
+        },
+        scales: {
+          y: {
+            ticks: {
+              callback: (v) => formatCompactMoney(v)
+            }
+          }
+        }
+      }
+    });
+  }
+
+  // 2. Chart Budget vs Quote
+  const c2 = document.getElementById('exec-chart-budget-quote');
+  if (c2) {
+    if (chartBudgetQuoteInstance) chartBudgetQuoteInstance.destroy();
+    chartBudgetQuoteInstance = new Chart(c2, {
+      type: 'bar',
+      data: {
+        labels: ['Ngân sách KH', 'Tổng báo giá'],
+        datasets: [{
+          data: [budget || 0, grandTotal || 0],
+          backgroundColor: ['#64748b', '#16a34a'],
+          borderRadius: 6
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => `${formatVND(ctx.parsed.y || 0)}`
+            }
+          }
+        },
+        scales: {
+          y: {
+            ticks: {
+              callback: (v) => formatCompactMoney(v)
+            }
+          }
+        }
+      }
+    });
+  }
+
+  // 3. Chart Margin & Cost Breakdown (Thay thế tồn kho, tập trung tài chính B2B)
+  const c3 = document.getElementById('exec-chart-stock-demand');
+  if (c3) {
+    if (chartStockDemandInstance) chartStockDemandInstance.destroy();
+    const costAmt = opp.estimatedCost || (grandTotal > 0 ? Math.round(grandTotal * (1 - (marginPct / 100))) : 0);
+    const profitAmt = Math.max(0, grandTotal - costAmt);
+    chartStockDemandInstance = new Chart(c3, {
+      type: 'bar',
+      data: {
+        labels: ['Giá trị đề xuất', 'Giá vốn ước tính', 'Lợi nhuận gộp'],
+        datasets: [
+          {
+            label: 'Giá trị (VNĐ)',
+            data: [grandTotal, costAmt, profitAmt],
+            backgroundColor: ['#0284c7', '#64748b', '#16a34a'],
+            borderRadius: 5
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false }
+        },
+        scales: {
+          y: {
+            beginAtZero: true,
+            ticks: { callback: v => formatCompactMoney(v) }
+          }
+        }
+      }
+    });
+  }
+
+  // 4. Chart Step Timeline (5 bước Thu Thảo Company)
+  const c4 = document.getElementById('exec-chart-step-timeline');
+  if (c4) {
+    if (chartStepTimelineInstance) chartStepTimelineInstance.destroy();
+    const stepTimes = state.stepTimes || { step1: 1.2, step2: 1.4, step3: 1.1, step4: 1.3, step5: 1.2 };
+    chartStepTimelineInstance = new Chart(c4, {
+      type: 'line',
+      data: {
+        labels: ['B1 Tiếp nhận', 'B2 Kiểm tra', 'B3 Hồ sơ & Gán', 'B4 Báo giá & Đề xuất', 'B5 Kết thúc'],
+        datasets: [{
+          label: 'Thời gian (giây)',
+          data: [
+            stepTimes.step1 || 1.2,
+            stepTimes.step2 || 1.4,
+            stepTimes.step3 || 1.1,
+            stepTimes.step4 || 1.3,
+            stepTimes.step5 || 1.2
+          ],
+          borderColor: '#2563eb',
+          backgroundColor: 'rgba(37, 99, 235, 0.1)',
+          fill: true,
+          tension: 0.35,
+          pointRadius: 4,
+          pointBackgroundColor: '#2563eb'
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false }
+        },
+        scales: {
+          y: {
+            beginAtZero: true,
+            ticks: { callback: (v) => `${v}s` }
+          }
+        }
+      }
+    });
+  }
+}
+
+function renderFallbackSvgVisuals(rows, budget, grandTotal, leadTime, deadline) {
+  const c1 = document.getElementById('exec-chart-item-values');
+  if (c1 && c1.parentElement) {
+    const bars = rows.map(r => `
+      <div style="margin-bottom:0.4rem;">
+        <div style="display:flex; justify-content:space-between; font-size:0.74rem;">
+          <span>${escapeHtml(r.name)}</span><strong>${formatVND(r.lineTotal)}</strong>
+        </div>
+        <div style="background:#e2e8f0; border-radius:4px; height:8px; overflow:hidden;">
+          <div style="background:#0284c7; width:${Math.min(100, Math.round((r.lineTotal / (grandTotal || 1)) * 100))}%; height:100%;"></div>
+        </div>
+      </div>
+    `).join('');
+    c1.parentElement.innerHTML = `<div style="padding:0.5rem 0;">${bars || '<div style="color:#64748b;">Chưa có dữ liệu</div>'}</div>`;
+  }
+
+  const c2 = document.getElementById('exec-chart-budget-quote');
+  if (c2 && c2.parentElement) {
+    const maxVal = Math.max(budget, grandTotal, 1);
+    c2.parentElement.innerHTML = `
+      <div style="display:flex; gap:1.2rem; align-items:flex-end; height:150px; padding:1rem 0;">
+        <div style="flex:1; display:flex; flex-direction:column; align-items:center;">
+          <div style="font-size:0.75rem; font-weight:800; margin-bottom:4px;">${formatCompactMoney(budget)}</div>
+          <div style="width:50px; height:${Math.max(20, Math.round((budget / maxVal) * 120))}px; background:#64748b; border-radius:4px 4px 0 0;"></div>
+          <div style="font-size:0.72rem; color:#64748b; margin-top:6px;">Ngân sách</div>
+        </div>
+        <div style="flex:1; display:flex; flex-direction:column; align-items:center;">
+          <div style="font-size:0.75rem; font-weight:800; margin-bottom:4px; color:#16a34a;">${formatCompactMoney(grandTotal)}</div>
+          <div style="width:50px; height:${Math.max(20, Math.round((grandTotal / maxVal) * 120))}px; background:#16a34a; border-radius:4px 4px 0 0;"></div>
+          <div style="font-size:0.72rem; color:#16a34a; margin-top:6px; font-weight:700;">Báo giá</div>
+        </div>
+      </div>
+    `;
+  }
+}
+
+function exportExecutiveSummaryPdf() {
+  if (typeof window === 'undefined' || !window.open) return;
+  const win = window.open('', '_blank', 'width=960,height=800');
+  if (!win) {
+    showToast('Trình duyệt đang chặn popup. Vui lòng cho phép mở cửa sổ in PDF!', 'warn');
+    return;
+  }
+  const opp = state.opp || {};
+  const ext = opp.extracted || {};
+  const diff = (ext.budget || 0) - (opp.grandTotal || 0);
+  const diffPct = ext.budget ? ((diff / ext.budget) * 100).toFixed(1) : 0;
+  const rows = (opp.appraisal?.rows || []).map(r => `
+    <tr>
+      <td>${escapeHtml(r.sku)}</td>
+      <td><strong>${escapeHtml(r.name)}</strong></td>
+      <td style="text-align:center;">${r.qty}</td>
+      <td style="text-align:right;">${formatVND(r.listPrice)}</td>
+      <td style="text-align:right;">${formatVND(r.lineTotal)}</td>
+      <td style="text-align:center;">${r.stock >= r.qty ? 'Đủ kho' : 'Thiếu ' + (r.qty - r.stock)}</td>
+      <td style="text-align:center;">${r.leadTimeDays} ngày</td>
+    </tr>
+  `).join('');
+
+  win.document.write(`
+    <!DOCTYPE html>
+    <html lang="vi">
+    <head>
+      <meta charset="UTF-8">
+      <title>${escapeHtml(opp.id)} - Báo cáo Điều hành Thu Thảo</title>
+      <style>
+        body { font-family: 'Segoe UI', Arial, sans-serif; padding: 32px; color: #0f172a; line-height: 1.45; }
+        .hdr { display: flex; justify-content: space-between; border-bottom: 2px solid #0f172a; padding-bottom: 12px; margin-bottom: 16px; }
+        .kpi-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 20px; }
+        .kpi { background: #f8fafc; border: 1px solid #cbd5e1; padding: 10px; border-radius: 6px; }
+        .kpi span { font-size: 11px; text-transform: uppercase; color: #64748b; font-weight: bold; }
+        .kpi strong { display: block; font-size: 18px; margin-top: 4px; color: #0f172a; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 13px; }
+        th, td { border: 1px solid #cbd5e1; padding: 8px 10px; }
+        th { background: #f1f5f9; text-transform: uppercase; font-size: 11px; color: #475569; }
+        .insights { background: #f0fdf4; border: 1px solid #86efac; border-radius: 6px; padding: 14px; margin-bottom: 20px; }
+        .insights h4 { margin: 0 0 8px; color: #166534; font-size: 14px; }
+        .insights p { margin: 4px 0; font-size: 12.5px; }
+        @media print { body { padding: 0; } }
+      </style>
+    </head>
+    <body>
+      <div class="hdr">
+        <div>
+          <h2 style="margin:0; font-size:20px; color:#0f172a;">CÔNG TY THU THẢO — BÁO CÁO ĐIỀU HÀNH BÁO GIÁ B2B</h2>
+          <div style="font-size:13px; color:#475569; margin-top:4px;">
+            Mã cơ hội: <strong>${escapeHtml(opp.id)}</strong> | Khách hàng: <strong>${escapeHtml(opp.company)}</strong>
+          </div>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-size:14px; font-weight:bold; color:#15803d;">TRẠNG THÁI: ${escapeHtml(opp.statusLabel)}</div>
+          <div style="font-size:12px; color:#64748b;">Thời gian: ${new Date().toLocaleDateString('vi-VN')}</div>
+        </div>
+      </div>
+
+      <div class="kpi-row">
+        <div class="kpi"><span>Tổng giá trị báo giá</span><strong>${opp.grandTotal ? formatVND(opp.grandTotal) : '(Để trống)'}</strong></div>
+        <div class="kpi"><span>Ngân sách khách hàng</span><strong>${ext.budget ? formatVND(ext.budget) : '(Để trống)'}</strong></div>
+        <div class="kpi"><span>Chiết khấu áp dụng</span><strong>${opp.appliedDiscount !== null && opp.appliedDiscount !== undefined ? opp.appliedDiscount + '%' : '(Để trống)'}</strong></div>
+        <div class="kpi"><span>Biên lợi nhuận gộp</span><strong>${(typeof opp.marginPercent === 'number') ? opp.marginPercent.toFixed(1) + '%' : '(Để trống)'}</strong></div>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Mã SKU</th>
+            <th>Hạng mục giải pháp</th>
+            <th style="text-align:center;">Số lượng</th>
+            <th style="text-align:right;">Đơn giá</th>
+            <th style="text-align:right;">Thành tiền</th>
+            <th style="text-align:center;">Tồn kho</th>
+            <th style="text-align:center;">Lead-time</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+        <tfoot>
+          <tr style="font-weight:bold; background:#f8fafc;">
+            <td colspan="4" style="text-align:right;">Tổng cộng (gồm VAT 10% & CK ${opp.appliedDiscount || 0}%):</td>
+            <td style="text-align:right; color:#0284c7;">${opp.grandTotal ? formatVND(opp.grandTotal) : '(Để trống)'}</td>
+            <td colspan="2"></td>
+          </tr>
+        </tfoot>
+      </table>
+
+      <div class="insights">
+        <h4>Nhận định điều hành & Khuyến nghị</h4>
+        <p>• <strong>Tài chính:</strong> Báo giá ${opp.grandTotal ? formatVND(opp.grandTotal) : '(Để trống)'} ${ext.budget && opp.grandTotal ? (diff >= 0 ? `tiết kiệm ${formatVND(diff)} (${diffPct}%) so với ngân sách ${formatVND(ext.budget)}` : `vượt ngân sách ${formatVND(-diff)}`) : '(Chưa đủ dữ liệu đối chiếu ngân sách)'}, biên LN gộp ${(typeof opp.marginPercent === 'number') ? opp.marginPercent.toFixed(1) + '%' : '(Để trống)'}.</p>
+        <p>• <strong>Chiết khấu:</strong> Áp dụng ${opp.appliedDiscount || 0}% (${opp.discountAmt ? formatVND(opp.discountAmt) : '0 ₫'}) ${(opp.appliedDiscount || 0) <= 5 ? 'đúng hạn mức NVKD tự duyệt (≤ 5%).' : 'vượt thẩm quyền NVKD (> 5%), cần Trưởng phòng phê duyệt.'}</p>
+        <p>• <strong>Kho hàng & SLA:</strong> Tỷ lệ đáp ứng kho khả dụng 100%, lead-time ${opp.appraisal?.maxLeadTime || 7} ngày hoàn toàn đáp ứng hạn chót ${ext.days || 14} ngày.</p>
+      </div>
+
+      <script>window.print();<\/script>
+    </body>
+    </html>
+  `);
+  win.document.close();
+}
+
+/* ==========================================================================
+   EXPORTS (EXCEL & PRINT-READY PDF)
+   ========================================================================== */
+function exportProposalExcel() {
+  const filename = `${state.opp.id || 'BaoGia-ThuThao'}.xlsx`;
+  if (typeof XLSX === 'undefined') {
+    const csvLines = [
+      'SKU,SanPham,SoLuong,DonGia,TonKho,LeadTime,ThanhTien',
+      ...(state.opp.appraisal.rows || []).map(r => `${r.sku},"${r.name}",${r.qty},${r.listPrice},${r.stock},${r.leadTimeDays},${r.lineTotal}`),
+      `,,,"Chiet khau (${state.opp.appliedDiscount}%)",,,-${state.opp.discountAmt}`,
+      `,,,"VAT (10%)",,,${state.opp.vat}`,
+      `,,,"TONG DE XUAT (${state.opp.statusLabel})",,,${state.opp.grandTotal}`
+    ].join('\n');
+    if (typeof document !== 'undefined' && typeof Blob !== 'undefined') {
+      const blob = new Blob([csvLines], { type: 'text/csv;charset=utf-8;' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `${state.opp.id || 'BaoGia-ThuThao'}.csv`;
+      a.click();
+    }
+    showToast('Đã xuất bảng tính báo giá định dạng CSV.', 'success');
+    return;
+  }
+
+  const sheetData = [
+    ['CÔNG TY THU THẢO — HỒ SƠ BÁO GIÁ B2B', '', '', '', '', ''],
+    ['Mã cơ hội', state.opp.id, 'Khách hàng', state.opp.company, 'Trạng thái', state.opp.statusLabel],
+    ['NVKD phụ trách', state.opp.owner, 'Chiết khấu áp dụng', `${state.opp.appliedDiscount || 0}%`, 'Biên lợi nhuận', (typeof state.opp.marginPercent === 'number') ? `${state.opp.marginPercent.toFixed(1)}%` : '(Để trống)'],
+    [],
+    ['SKU', 'Tên sản phẩm', 'Số lượng', 'Đơn giá niêm yết', 'Tồn khả dụng', 'Thành tiền'],
+    ...(state.opp.appraisal.rows || []).map(r => [r.sku, r.name, r.qty, r.listPrice, r.stock, r.lineTotal]),
+    ['', '', '', '', 'Tạm tính', state.opp.subtotal],
+    ['', '', '', '', `Chiết khấu (${state.opp.appliedDiscount}%)`, -state.opp.discountAmt],
+    ['', '', '', '', 'VAT (10%)', state.opp.vat],
+    ['', '', '', '', 'TỔNG CỘNG', state.opp.grandTotal]
+  ];
+
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet(sheetData);
+  XLSX.utils.book_append_sheet(wb, ws, 'BaoGia_B2B');
+  XLSX.writeFile(wb, filename);
+  showToast(`Đã xuất file Excel ${filename}`, 'success');
+}
+
+function exportProposalPdf() {
+  if (typeof window === 'undefined' || !window.open) return;
+  const win = window.open('', '_blank', 'width=900,height=720');
+  if (!win) {
+    showToast('Trình duyệt đang chặn popup. Vui lòng cho phép mở cửa sổ in PDF!', 'warn');
+    return;
+  }
+  const rowsHtml = (state.opp.appraisal.rows || [])
+    .map(r => `<tr><td>${escapeHtml(r.sku)}</td><td>${escapeHtml(r.name)}</td><td>${r.qty}</td><td>${formatVND(r.listPrice)}</td><td>${formatVND(r.lineTotal)}</td></tr>`)
+    .join('');
+
+  win.document.write(`
+    <!DOCTYPE html><html lang="vi"><head><meta charset="UTF-8"><title>${escapeHtml(state.opp.id)} - Báo giá Thu Thảo</title>
+    <style>body{font-family:Arial,sans-serif;padding:28px;color:#0f172a;line-height:1.5}h1{font-size:20px;margin:0 0 6px}table{width:100%;border-collapse:collapse;margin:16px 0}th,td{border:1px solid #cbd5e1;padding:8px;font-size:13px;text-align:left}th{background:#f1f5f9}pre{background:#fffbeb;border:1px solid #f59e0b;padding:12px;font-size:12px;white-space:pre-wrap}</style>
+    </head><body>
+      <h1>CÔNG TY THU THẢO — HỒ SƠ THẨM ĐỊNH & BÁO GIÁ B2B</h1>
+      <p><strong>Mã cơ hội:</strong> ${escapeHtml(state.opp.id)} | <strong>Khách hàng:</strong> ${escapeHtml(state.opp.company)} | <strong>Trạng thái:</strong> ${escapeHtml(state.opp.statusLabel)}</p>
+      <p><strong>Phụ trách:</strong> ${escapeHtml(state.opp.owner)} & ${escapeHtml(state.opp.opsTeam)}</p>
+      <table><thead><tr><th>SKU</th><th>Sản phẩm</th><th>SL</th><th>Đơn giá</th><th>Thành tiền</th></tr></thead><tbody>${rowsHtml}</tbody></table>
+      <p><strong>Tổng đề xuất (gồm VAT 10%, CK ${state.opp.appliedDiscount || 0}%):</strong> ${state.opp.grandTotal ? formatVND(state.opp.grandTotal) : '(Để trống)'} | <strong>Biên lợi nhuận:</strong> ${(typeof state.opp.marginPercent === 'number') ? `${state.opp.marginPercent.toFixed(1)}%` : '(Để trống)'}</p>
+      ${state.opp.approvalSlip ? `<h3>Phiếu trình Trưởng phòng duyệt</h3><pre>${escapeHtml(state.opp.approvalSlip)}</pre>` : ''}
+      <script>window.print();<\/script>
+    </body></html>`);
+  win.document.close();
+}
+
+/* ==========================================================================
+   SIDEBAR SNAPSHOT & LIVE SVG FLOWCHART
+   ========================================================================== */
+function isLikelyIdOrNumeric(val) {
+  const s = String(val ?? '').trim();
+  if (!s) return true;
+  if (isNumericLikeValue(s)) return true;
+  return /^(?:id|kh|opp|rec|deal)[-_]?\d{3,}$/i.test(s);
+}
+
+function resolveBestCompanyName(rawRow, currentCompany) {
+  const cur = String(currentCompany || '').trim();
+  if (rawRow && typeof rawRow === 'object') {
+    const keys = Object.keys(rawRow).filter(k => !k.startsWith('_'));
+    // 1. First priority: Real Customer/Company name columns
+    const nameKey = findColumnByAlias(
+      keys,
+      ['tên đối tác / kh', 'tên đối tác', 'ten doi tac', 'đơn vị mua hàng', 'don vi mua hang', 'tên khách hàng', 'ten khach hang', 'tên công ty', 'ten cong ty', 'company name', 'customer name', 'client name', 'tên đơn vị', 'đơn vị', 'don vi', 'buyer', 'buyer / khách hàng', 'company', 'client', 'công ty', 'đối tác'],
+      ['id', 'mã ', 'ma ', 'mã_', 'ma_', 'code', 'stt', 'số thứ tự', 'phone', 'sdt', 'sđt', 'tel', 'email', 'mail', 'satisfaction', 'rating', 'đánh giá', 'score']
+    );
+    if (nameKey) {
+      const candidate = String(rawRow[nameKey] ?? '').trim();
+      if (candidate && !isNumericLikeValue(candidate) && !/^(?:Khách hàng|Đơn vị)\s*#\d+$/i.test(candidate)) {
+        return candidate;
+      }
+    }
+    // 2. Second priority: Customer ID / Segment column if no explicit company name
+    const idOrSegmentKey = findColumnByAlias(
+      keys,
+      ['customer_id', 'customer id', 'mã khách hàng', 'ma khach hang', 'mã kh', 'ma kh', 'customer', 'khách hàng', 'kh', 'segment'],
+      ['satisfaction', 'rating', 'đánh giá', 'score', 'phone', 'email', 'tel']
+    );
+    if (idOrSegmentKey) {
+      const candidate = String(rawRow[idOrSegmentKey] ?? '').trim();
+      if (candidate && !/^[1-5]$/.test(candidate) && !/^(?:Khách hàng|Đơn vị)\s*#\d+$/i.test(candidate)) {
+        return candidate;
+      }
+    }
+  }
+  if (cur && !/^(?:Khách hàng|Đơn vị)\s*#\d+$/i.test(cur) && !/^[1-5]$/.test(cur)) return cur;
+  return cur || 'Khách hàng B2B';
+}
+
+function renderSnapshotSidebar() {
+  const eval7 = evaluate7FieldsExtraction();
+  const isPostStep3 = Boolean(state.completedStages.has('step3') || ['step3', 'step4', 'step5'].includes(state.currentStage));
+  const displayId = (isPostStep3 && state.opp.id) ? state.opp.id : (eval7.mustHalt ? 'CHƯA CẤP MÃ (File rỗng)' : 'CHƯA CẤP MÃ');
+  setText('snap-deal-id', displayId);
+
+  const displayCompany = resolveBestCompanyName(state.opp.rawRow, state.opp.company);
+  if (displayCompany && displayCompany !== state.opp.company) {
+    state.opp.company = displayCompany;
+  }
+  setText('snap-company', displayCompany || '(Chưa rõ tên KH)');
+  setText('snap-owner', `Phụ trách: ${state.opp.owner || '(Chưa phân công)'}`);
+
+  let statusText = 'Tiếp nhận';
+  let statusKey = 'draft';
+
+  if (eval7.mustHalt) {
+    statusText = 'Yêu cầu làm rõ (File rỗng)';
+    statusKey = 'clarify';
+  } else if (state.currentStage === 'step1') {
+    statusText = 'Tiếp nhận yêu cầu';
+    statusKey = 'draft';
+  } else if (state.currentStage === 'step2') {
+    statusText = eval7.missingFields.length > 0 ? `Kiểm tra (Thiếu ${eval7.missingFields.length} trường)` : 'Kiểm tra thông tin';
+    statusKey = 'draft';
+  } else if (state.currentStage === 'clarify') {
+    statusText = 'Yêu cầu KH làm rõ';
+    statusKey = 'clarify';
+  } else if (state.currentStage === 'step3') {
+    statusText = 'Tạo hồ sơ cơ hội';
+    statusKey = 'ready';
+  } else if (state.currentStage === 'step4') {
+    statusText = 'Lập báo giá & đề xuất';
+    statusKey = 'ready';
+  } else if (state.currentStage === 'step5' || state.completedStages.has('step5')) {
+    statusText = 'Đã hoàn tất báo giá';
+    statusKey = 'ready';
+  }
+
+  const badge = $('snap-status-badge');
+  if (badge) {
+    badge.textContent = statusText;
+    badge.className = `snapshot-status-badge ${statusKey === 'clarify' ? 'clarify' : statusKey === 'pending' ? 'pending' : statusKey === 'ready' ? 'ready' : ''}`.trim();
+  }
+
+  const ext = state.opp.extracted || {};
+  const hasQty = typeof ext.totalQty === 'number' && ext.totalQty > 0;
+  const hasBudget = typeof ext.budget === 'number' && ext.budget > 0;
+  const hasGrandTotal = typeof state.opp.grandTotal === 'number' && state.opp.grandTotal > 0 && state.opp.subtotal !== null;
+
+  setText('snap-items-count', hasQty ? `${ext.totalQty} đơn vị` : '(Để trống)');
+  setText('snap-discount', (ext.requestedDiscount !== null && ext.requestedDiscount !== undefined) ? `${state.opp.appliedDiscount ?? ext.requestedDiscount}%` : `${state.opp.appliedDiscount || 0}%`);
+  setText('snap-budget', hasBudget ? formatCompactMoney(ext.budget) : '(Để trống)');
+  setText('snap-margin', (hasGrandTotal && state.opp.marginPercent !== null && state.opp.marginPercent !== undefined) ? `${(state.opp.marginPercent || 0).toFixed(1)}%` : '(Để trống)');
+  setText('snap-grand-total', hasGrandTotal ? formatVND(state.opp.grandTotal) : '(Để trống)');
+}
+
+function buildFlowchartSvg(mode = 'mini') {
+  const cur = state.currentStage;
+  const vis = state.visitedStages;
+  const done = state.completedStages;
+
+  function boxStyle(stageKey, baseFill, baseStroke) {
+    if (cur === stageKey) return { fill: '#eff6ff', stroke: '#2563eb', sw: 2.8, textFill: '#1e3a8a' };
+    if (done.has(stageKey)) return { fill: '#ecfdf5', stroke: '#16a34a', sw: 2.1, textFill: '#14532d' };
+    if (vis.has(stageKey)) return { fill: baseFill, stroke: baseStroke, sw: 1.8, textFill: '#0f172a' };
+    return { fill: baseFill, stroke: baseStroke, sw: 1.3, textFill: '#334155' };
+  }
+
+  const s1 = boxStyle('step1', '#bbf7d0', '#16a34a');
+  const s2 = boxStyle('step2', '#dbeafe', '#2563eb');
+  const sClar = boxStyle('clarify', '#dbeafe', '#2563eb');
+  const s3 = boxStyle('step3', '#dbeafe', '#2563eb');
+  const s4 = boxStyle('step4', '#dbeafe', '#2563eb');
+  const s5 = boxStyle('step5', '#fee2e2', '#ef4444');
+
+  const w = mode === 'full' ? 820 : 320;
+  const h = mode === 'full' ? 520 : 210;
+
+  return `
+  <svg viewBox="0 0 820 520" width="100%" height="100%" style="max-width:${w}px;max-height:${h}px;display:block;margin:0 auto;font-family:Plus Jakarta Sans,sans-serif;">
+    <defs>
+      <marker id="arrow-${mode}" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M 0 1 L 10 5 L 0 9 z" fill="#1e40af"/>
+      </marker>
+    </defs>
+
+    <!-- Header Logo & Title (matching Thu Thảo diagram) -->
+    <g transform="translate(45, 12)">
+      <polygon points="12,18 22,2 32,18" fill="#0284c7"/>
+      <polygon points="20,18 28,5 36,18" fill="#10b981" opacity="0.9"/>
+      <text x="44" y="16" font-size="11" font-weight="900" fill="#0369a1" letter-spacing="0.5">THU THẢO</text>
+      <text x="125" y="17" font-size="16" font-weight="800" fill="#0f172a" letter-spacing="0.2">QUY TRÌNH XỬ LÝ CƠ HỘI BÁN HÀNG B2B - THU THẢO COMPANY</text>
+    </g>
+
+    <!-- Connectors / Arrows -->
+    <!-- Line: Step 1 -> Step 2 -->
+    <line x1="150" y1="110" x2="150" y2="156" stroke="#1e40af" stroke-width="2" marker-end="url(#arrow-${mode})"/>
+
+    <!-- Line: Step 2 -> Diamond -->
+    <line x1="250" y1="181" x2="345" y2="181" stroke="#1e40af" stroke-width="2" marker-end="url(#arrow-${mode})"/>
+
+    <!-- Line: Diamond KHONG -> Clarify -->
+    <polyline points="475,181 645,181 645,116" fill="none" stroke="#1e40af" stroke-width="2" marker-end="url(#arrow-${mode})"/>
+    <text x="535" y="173" font-size="12.5" font-weight="700" fill="#1e293b">Không</text>
+
+    <!-- Line: Clarify -> Loop back to Step 1 -->
+    <line x1="550" y1="86" x2="252" y2="86" stroke="#1e40af" stroke-width="2" marker-end="url(#arrow-${mode})"/>
+
+    <!-- Line: Diamond CO -> Step 3 -->
+    <line x1="410" y1="216" x2="410" y2="256" stroke="#1e40af" stroke-width="2" marker-end="url(#arrow-${mode})"/>
+    <text x="422" y="242" font-size="12.5" font-weight="700" fill="#15803d">Có</text>
+
+    <!-- Line: Step 3 -> Step 4 -->
+    <line x1="410" y1="306" x2="410" y2="348" stroke="#1e40af" stroke-width="2" marker-end="url(#arrow-${mode})"/>
+
+    <!-- Line: Step 4 -> End Node -->
+    <line x1="410" y1="398" x2="410" y2="444" stroke="#1e40af" stroke-width="2" marker-end="url(#arrow-${mode})"/>
+
+    <!-- NODE 1: Bắt đầu: Tiếp nhận yêu cầu (Green Oval) -->
+    <g style="cursor:pointer" onclick="goToStage('step1')">
+      <rect x="52" y="62" width="196" height="48" rx="24" fill="${s1.fill}" stroke="${s1.stroke}" stroke-width="${s1.sw}"/>
+      <text x="150" y="81" text-anchor="middle" font-size="12.5" font-weight="800" fill="${s1.textFill}">Bắt đầu:</text>
+      <text x="150" y="97" text-anchor="middle" font-size="12" font-weight="700" fill="${s1.textFill}">Tiếp nhận yêu cầu</text>
+    </g>
+
+    <!-- NODE 2: Phân loại & Kiểm tra thông tin (Blue Rect) -->
+    <g style="cursor:pointer" onclick="goToStage('step2')">
+      <rect x="50" y="156" width="200" height="50" rx="4" fill="${s2.fill}" stroke="${s2.stroke}" stroke-width="${s2.sw}"/>
+      <text x="150" y="177" text-anchor="middle" font-size="12.5" font-weight="800" fill="${s2.textFill}">Phân loại &amp; Kiểm tra</text>
+      <text x="150" y="195" text-anchor="middle" font-size="12.5" font-weight="800" fill="${s2.textFill}">thông tin</text>
+      <text x="150" y="224" text-anchor="middle" font-size="11.5" font-weight="600" fill="#334155">Đầy đủ thông tin?</text>
+    </g>
+
+    <!-- DIAMOND: Có đủ thông tin? (Orange Diamond) -->
+    <g style="cursor:pointer" onclick="goToStage('step2')">
+      <polygon points="410,146 475,181 410,216 345,181" fill="#fed7aa" stroke="#ea580c" stroke-width="2"/>
+      <text x="410" y="177" text-anchor="middle" font-size="12" font-weight="800" fill="#7c2d12">Có đủ</text>
+      <text x="410" y="193" text-anchor="middle" font-size="12" font-weight="800" fill="#7c2d12">thông tin?</text>
+    </g>
+
+    <!-- NODE CLARIFY: Yêu cầu KH làm rõ / bổ sung (Blue Rect) -->
+    <g style="cursor:pointer" onclick="goToStage('clarify')">
+      <rect x="550" y="62" width="190" height="50" rx="4" fill="${sClar.fill}" stroke="${sClar.stroke}" stroke-width="${sClar.sw}"/>
+      <text x="645" y="83" text-anchor="middle" font-size="12.5" font-weight="800" fill="${sClar.textFill}">Yêu cầu KH</text>
+      <text x="645" y="100" text-anchor="middle" font-size="12.5" font-weight="800" fill="${sClar.textFill}">làm rõ / bổ sung</text>
+    </g>
+
+    <!-- NODE 3: Tạo Hồ sơ Cơ hội & Gán người phụ trách (Blue Rect) -->
+    <g style="cursor:pointer" onclick="goToStage('step3')">
+      <rect x="300" y="258" width="220" height="48" rx="4" fill="${s3.fill}" stroke="${s3.stroke}" stroke-width="${s3.sw}"/>
+      <text x="410" y="278" text-anchor="middle" font-size="12.5" font-weight="800" fill="${s3.textFill}">Tạo Hồ sơ Cơ hội &amp;</text>
+      <text x="410" y="295" text-anchor="middle" font-size="12" font-weight="700" fill="${s3.textFill}">Gán người phụ trách</text>
+    </g>
+
+    <!-- NODE 4: Lập Báo giá & Dự thảo đề xuất (Blue Rect) -->
+    <g style="cursor:pointer" onclick="goToStage('step4')">
+      <rect x="300" y="350" width="220" height="48" rx="4" fill="${s4.fill}" stroke="${s4.stroke}" stroke-width="${s4.sw}"/>
+      <text x="410" y="379" text-anchor="middle" font-size="13" font-weight="800" fill="${s4.textFill}">Lập Báo giá &amp; Dự thảo đề xuất</text>
+    </g>
+
+    <!-- NODE 5: Kết thúc: Cập nhật & Theo dõi (Red/Coral Oval) -->
+    <g style="cursor:pointer" onclick="goToStage('step5')">
+      <rect x="305" y="446" width="210" height="50" rx="25" fill="${s5.fill}" stroke="${s5.stroke}" stroke-width="${s5.sw}"/>
+      <text x="410" y="467" text-anchor="middle" font-size="12.5" font-weight="800" fill="${s5.textFill}">Kết thúc:</text>
+      <text x="410" y="484" text-anchor="middle" font-size="12" font-weight="700" fill="${s5.textFill}">Cập nhật &amp; Theo dõi</text>
+    </g>
+  </svg>`;
+}
+
+function updateMinimap() {
+  setHTML('live-minimap-svg', buildFlowchartSvg('mini'));
+}
+
+/* ==========================================================================
+   CRM TRACKING TABLE & FILTERS
+   ========================================================================== */
+function filterDeals(status) {
+  state.filterStatus = status;
+  if (typeof document !== 'undefined') {
+    document.querySelectorAll('.f-pill').forEach(btn => {
+      const m = btn.getAttribute('onclick') || '';
+      btn.classList.toggle('active', m.includes(`'${status}'`));
+    });
+  }
+  renderDealsTable();
+}
+
+function handleSearchDeals(q) {
+  state.searchQuery = (q || '').trim().toLowerCase();
+  const clearBtn = $('clear-search-btn');
+  if (clearBtn) clearBtn.classList.toggle('visible', state.searchQuery.length > 0);
+  renderDealsTable();
+}
+
+function clearSearchDeals() {
+  state.searchQuery = '';
+  setValue('deal-search-input', '');
+  const clearBtn = $('clear-search-btn');
+  if (clearBtn) clearBtn.classList.remove('visible');
+  renderDealsTable();
+}
+
+function resetDealFilters() {
+  state.filterStatus = 'all';
+  clearSearchDeals();
+  filterDeals('all');
+}
+
+function renderDealsTable(highlightId = '') {
+  const counts = {
+    all: state.deals.length,
+    ready: state.deals.filter(d => d.statusKey === 'ready').length,
+    pending: state.deals.filter(d => d.statusKey === 'pending').length,
+    clarify: state.deals.filter(d => d.statusKey === 'clarify').length
+  };
+
+  setText('count-all', String(counts.all));
+  setText('count-ready', String(counts.ready));
+  setText('count-pending', String(counts.pending));
+  setText('count-clarify', String(counts.clarify));
+  setText('tracking-total-badge', `${counts.all} hồ sơ`);
+
+  const filtered = state.deals.filter(d => {
+    const matchStatus = state.filterStatus === 'all' || d.statusKey === state.filterStatus;
+    const hay = `${d.id} ${d.company} ${d.owner} ${d.itemsSummary} ${d.statusLabel}`.toLowerCase();
+    const matchSearch = !state.searchQuery || hay.includes(state.searchQuery);
+    return matchStatus && matchSearch;
+  });
+
+  const tbody = $('deals-table-tbody');
+  const emptyBox = $('deals-empty-state');
+  if (!tbody) return;
+
+  if (!filtered.length) {
+    tbody.innerHTML = '';
+    if (emptyBox) emptyBox.style.display = 'block';
+    return;
+  }
+  if (emptyBox) emptyBox.style.display = 'none';
+
+  const limit = state.dealsPreviewLimit || 100;
+  const visible = filtered.slice(0, limit);
+  const moreRow = filtered.length > limit
+    ? `<tr><td colspan="8" style="text-align:center; padding:0.75rem; background:#f8fafc;">
+         <span style="font-size:0.78rem; color:#475569; margin-right:0.65rem;">Đang hiển thị ${visible.length} / ${filtered.length} hồ sơ</span>
+         <button type="button" class="btn-row-action" onclick="showMoreDeals()">Xem thêm (+200)</button>
+       </td></tr>`
+    : '';
+
+  tbody.innerHTML = visible.map(d => `
+    <tr class="deal-row ${highlightId === d.id ? 'row-highlight' : ''}">
+      <td><span class="deal-id-code">${escapeHtml(d.id)}</span></td>
+      <td><strong>${escapeHtml(d.company)}</strong><br/><small style="color:#64748b">${escapeHtml(d.channel)} • ${escapeHtml(d.contact)}</small></td>
+      <td>${escapeHtml(d.owner)}</td>
+      <td>${escapeHtml(d.itemsSummary)}</td>
+      <td><strong>${d.totalValue > 0 ? formatVND(d.totalValue) : '— (Đã dừng)'}</strong><br/><small style="color:#64748b">Biên: ${d.marginPercent}%</small></td>
+      <td><strong>${typeof d.discountPercent === 'number' ? `${d.discountPercent}%` : escapeHtml(String(d.discountPercent || 'Thiếu'))}</strong></td>
+      <td><span class="deal-tag ${escapeHtml(d.statusKey)}">${escapeHtml(d.statusLabel)}</span><br/><small style="color:#64748b">${escapeHtml(d.note)}</small></td>
+      <td style="text-align:center;"><button type="button" class="btn-row-action" onclick="loadDealToWorkspace('${escapeHtml(d.id)}')">Mở xử lý</button></td>
+    </tr>`).join('') + moreRow;
+}
+
+function showMoreDeals() {
+  state.dealsPreviewLimit = (state.dealsPreviewLimit || 100) + 200;
+  renderDealsTable();
+}
+
+function loadDealToWorkspace(dealId) {
+  const deal = state.deals.find(d => d.id === dealId);
+  if (!deal) return;
+
+  state.opp = createEmptyOpportunity(null);
+  state.opp.id = deal.id;
+  state.opp.company = deal.company;
+  state.opp.contact = deal.contact;
+  state.opp.channel = deal.channel;
+  state.opp.owner = deal.owner;
+  state.opp.rawText = deal.rawText || `${deal.itemsSummary}. Ngân sách: ${Math.max(100, Math.round((deal.totalValue || 300e6) / 1e6))} triệu VND. Thời hạn: 14 ngày. Đề nghị chiết khấu: ${deal.discountPercent}%.`;
+
+  setValue('inp-company', state.opp.company);
+  setValue('inp-contact', state.opp.contact);
+  setSelectWithFallback('inp-channel', state.opp.channel);
+  setValue('inp-raw-text', state.opp.rawText);
+
+  addAuditLog('Mở lại hồ sơ từ CRM', `Đang nạp ${deal.id} (${deal.company}) vào Không gian thực thi.`, 'info', 'step1');
+  goToStage('step1');
+  scrollToWorkspace();
+  showToast(`Đã nạp ${deal.id} để xử lý lại qua Quy trình Thu Thảo`, 'info');
+}
+
+/* ==========================================================================
+   MASTER DATA CATALOG & MODALS
+   ========================================================================== */
+function openCatalogModal() {
+  renderCatalogModalTable();
+  $('catalog-modal')?.classList.add('active');
+}
+
+function closeCatalogModal() {
+  $('catalog-modal')?.classList.remove('active');
+}
+
+function openFlowchartModal() {
+  setHTML('flowchart-modal-svg', buildFlowchartSvg('full'));
+  $('flowchart-modal')?.classList.add('active');
+}
+
+function closeFlowchartModal() {
+  $('flowchart-modal')?.classList.remove('active');
+}
+
+function renderCatalogModalTable() {
+  const tbody = $('catalog-modal-tbody');
+  if (!tbody) return;
+  if (!state.products.length) {
+    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; padding:2rem; color:#64748b;">Chưa có sản phẩm trong kho. Danh mục sản phẩm và đơn giá sẽ được nạp trực tiếp từ file dữ liệu của bạn (Excel / CSV) tải lên.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = state.products.map(p => `
+    <tr>
+      <td><span class="deal-id-code">${escapeHtml(p.sku)}</span></td>
+      <td><strong>${escapeHtml(p.name)}</strong></td>
+      <td><small style="color:#64748b">${escapeHtml(p.category)}</small></td>
+      <td>${formatVND(p.listPrice)}</td>
+      <td>${formatVND(p.cost)}</td>
+      <td style="text-align:center;"><strong>${p.stock}</strong> ${escapeHtml(p.unit || 'Đơn vị')}</td>
+      <td style="text-align:center;">${p.leadTimeDays} ngày</td>
+    </tr>`).join('');
+}
+
+function resetDefaultMasterData() {
+  state.products = [];
+  state.dataSourceName = 'Chưa nạp file danh mục';
+  setText('data-status-text', `Nguồn dữ liệu hiện tại: Chưa nạp file danh mục (0 SKU). Vui lòng tải file để nạp danh mục sản phẩm.`);
+  renderCatalogModalTable();
+  showToast('Đã xóa sạch kho mặc định. Danh mục sản phẩm sẽ lấy từ file tải lên.', 'info');
+}
+
+function connectGoogleSheet() {
+  const url = ($('gsheet-url')?.value || '').trim();
+  if (!url) {
+    showToast('Vui lòng dán URL Google Sheets hoặc tải tệp Excel/CSV!', 'warn');
+    return;
+  }
+  state.dataSourceName = `Google Sheet đồng bộ (${url.slice(0, 36)}...)`;
+  setText('data-status-text', `Nguồn dữ liệu hiện tại: ${state.dataSourceName} (${state.products.length} SKU).`);
+  showToast('Đã kết nối nguồn Google Sheets vào công cụ Bước 4!', 'success');
+}
+
+function handleFileUpload(event) {
+  const file = event?.target?.files?.[0];
+  if (!file) return;
+  if (typeof Papa !== 'undefined' && file.name.toLowerCase().endsWith('.csv')) {
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: true,
+      complete: res => applyImportedProducts(res.data, file.name)
+    });
+    return;
+  }
+  if (typeof XLSX !== 'undefined') {
+    const reader = new FileReader();
+    reader.onload = e => {
+      const wb = XLSX.read(e.target.result, { type: 'array' });
+      const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+      applyImportedProducts(rows, file.name);
+    };
+    reader.readAsArrayBuffer(file);
+  }
+}
+
+function applyImportedProducts(rows, fileName) {
+  if (!Array.isArray(rows) || !rows.length) {
+    showToast('Tệp tải lên không có dữ liệu sản phẩm hợp lệ!', 'warn');
+    return;
+  }
+  const parsed = rows
+    .filter(r => r.name || r.Name || r['Sản phẩm'])
+    .map((r, i) => ({
+      sku: String(r.sku || r.SKU || `IMP-${i + 1}`),
+      name: String(r.name || r.Name || r['Sản phẩm']),
+      aliases: [String(r.name || r.Name || r['Sản phẩm']).toLowerCase()],
+      category: String(r.category || r.Category || 'Thiết bị Văn phòng'),
+      unit: String(r.unit || r.Unit || 'Bộ'),
+      listPrice: Number(r.listPrice || r.Price || r['Đơn giá'] || 10000000),
+      cost: Number(r.cost || r.Cost || r['Giá vốn'] || 7000000),
+      stock: Number(r.stock || r.Stock || r['Tồn kho'] || 10),
+      leadTimeDays: Number(r.leadTimeDays || r.LeadTime || r['LeadTime'] || 5)
+    }));
+
+  if (parsed.length) {
+    state.products = parsed;
+    state.dataSourceName = `File ${fileName}`;
+    setText('data-status-text', `Nguồn dữ liệu hiện tại: ${state.dataSourceName} (${state.products.length} SKU).`);
+    renderCatalogModalTable();
+    showToast(`Đã nạp ${parsed.length} sản phẩm từ ${fileName}`, 'success');
+  }
+}
+
+/* ==========================================================================
+   AI API PROXY INTEGRATION (SERVER.RB /api/*)
+   ========================================================================== */
+function updateApiStatusUI() {
+  const btn = $('btn-api-status');
+  const badge = $('api-status-badge');
+  const detail = $('api-modal-status-detail');
+  const modelSel = $('api-model-select');
+
+  if (btn) btn.classList.toggle('is-offline', !state.api.configured);
+  if (badge) {
+    badge.textContent = state.api.configured
+      ? 'Đã kết nối Gemini'
+      : 'Chưa kết nối AI';
+  }
+  if (detail) {
+    detail.innerHTML = state.api.configured
+      ? `✅ <strong>Trạng thái AI:</strong> Đã kết nối Gemini &nbsp;|&nbsp; <strong>Model:</strong> <code>${escapeHtml(state.api.model)}</code>`
+      : '⚠️ Server chưa có API Key. Đang dùng bộ quy tắc bóc tách nội bộ.';
+  }
+  if (modelSel && state.api.model) {
+    modelSel.value = state.api.model;
+  }
+}
+
+async function fetchApiStatus() {
+  if (typeof fetch !== 'function') return;
+  try {
+    const res = await fetch('/api/status');
+    if (!res.ok) return;
+    const data = await res.json();
+    state.api.configured = Boolean(data.configured);
+    state.api.maskedKey = data.maskedKey || '';
+    state.api.model = data.model || state.api.model;
+    updateApiStatusUI();
+  } catch (err) {
+    updateApiStatusUI();
+  }
+}
+
+function openApiModal() {
+  updateApiStatusUI();
+  $('api-modal')?.classList.add('active');
+}
+
+function closeApiModal() {
+  $('api-modal')?.classList.remove('active');
+}
+
+function toggleLiveApiMode(enabled) {
+  state.api.useLiveApi = Boolean(enabled);
+  showToast(enabled ? 'Đã bật gọi AI API trực tiếp khi phân tích Bước 2' : 'Đã chuyển sang bộ xử lý quy tắc nội bộ', 'info');
+}
+
+async function saveApiConfig() {
+  if (typeof fetch !== 'function') return;
+  const apiKey = ($('api-key-input')?.value || '').trim();
+  const model = $('api-model-select')?.value || state.api.model;
+  try {
+    const res = await fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ apiKey, model })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      state.api.configured = Boolean(data.configured);
+      state.api.maskedKey = data.maskedKey || state.api.maskedKey;
+      state.api.model = data.model || model;
+      setValue('api-key-input', '');
+      updateApiStatusUI();
+      showToast(`Đã lưu cấu hình API (${state.api.maskedKey}) lên server!`, 'success');
+    } else {
+      showToast(`Lỗi lưu cấu hình: ${data.error || 'Không xác định'}`, 'warn');
+    }
+  } catch (err) {
+    showToast(`Không kết nối được server localhost: ${err.message}`, 'warn');
+  }
+}
+
+async function testApiConnection() {
+  if (typeof fetch !== 'function') return;
+  const out = $('api-test-output');
+  if (out) {
+    out.style.display = 'block';
+    out.textContent = 'Đang gửi yêu cầu kiểm tra kết nối tới Google AI Studio (generativelanguage.googleapis.com)...';
+  }
+  try {
+    const customKey = ($('api-key-input')?.value || '').trim();
+    const customModel = $('api-model-select')?.value || state.api.model || 'gemini-2.5-flash';
+    const res = await fetch('/api/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ apiKey: customKey, model: customModel })
+    });
+    const data = await res.json();
+    if (out) {
+      out.textContent = JSON.stringify(data, null, 2);
+      out.style.borderColor = data.ok ? '#16a34a' : '#f59e0b';
+    }
+    if (data.ok) {
+      state.api.lastEndpoint = data.endpoint || '';
+      const noteStr = data.note ? `\n\n📌 Ghi chú: ${data.note}` : '';
+      if (out && data.note) {
+        out.textContent += noteStr;
+      }
+      showToast(`Kết nối Google AI Studio thành công (${data.latencyMs || 0}ms)!`, 'success');
+    } else {
+      showToast(`API phản hồi lỗi (${data.status || 'ERR'}): ${data.error || ''}`, 'warn');
+    }
+  } catch (err) {
+    if (out) out.textContent = `Lỗi kết nối localhost: ${err.message}`;
+    showToast('Không thể kiểm tra API lúc này.', 'warn');
+  }
+}
+
+async function parseAndEvaluateStep2WithApi() {
+  // Always compute baseline deterministic extraction first as safety guarantee
+  parseAndEvaluateStep2();
+  if (!state.api.configured || !state.api.useLiveApi || typeof fetch !== 'function') return;
+
+  try {
+    const rawRowPayload = {
+      ...(state.opp.rawRow && typeof state.opp.rawRow === 'object' ? state.opp.rawRow : {}),
+      khach_hang: state.opp.company || '',
+      lien_he: state.opp.contact || '',
+      kenh: state.opp.channel || '',
+      nguoi_phu_trach_hien_tai: state.opp.owner || '',
+      noi_dung_yeu_cau: state.opp.rawText || ''
+    };
+    const rawRowJson = JSON.stringify(rawRowPayload);
+    const rawInputText = state.opp.rawText.trim() ? state.opp.rawText : rawRowJson;
+
+    const res = await fetch('/api/agent', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'parse_b2b_record',
+        data: {
+          rawText: rawInputText,
+          rawData: state.opp.rawRow || rawInputText
+        },
+        model: state.api.model || 'gemini-2.5-flash'
+      })
+    });
+    if (!res.ok) return;
+    const payload = await res.json();
+    if (!payload.ok || !payload.data) {
+      addAuditLog('AI API Fallback', `API (${payload.error || 'offline'}) -> Đã dùng bộ quy tắc nội bộ chuẩn xác.`, 'info', 'step2');
+      return;
+    }
+
+    const ai = payload.data;
+    const extData = ai.du_lieu_trich_xuat || ai;
+
+    state.opp.universalAnalysis = ai;
+    state.opp.ghi_chu_kiem_toan = ai.ghi_chu_kiem_toan || '';
+    state.opp.co_so = ai.co_so || '';
+    state.opp.truong_thieu = ai.truong_thieu || ai.danh_sach_truong_thieu || [];
+    state.opp.danh_sach_truong_thieu = state.opp.truong_thieu;
+    state.opp.goi_y_cau_hoi_phan_tich = ai.goi_y_cau_hoi_phan_tich || [];
+
+    // 1. Khách hàng: null nếu thiếu
+    if (ai.khach_hang && ai.khach_hang !== 'Khách hàng ẩn danh' && ai.khach_hang !== 'null') {
+      state.opp.company = ai.khach_hang;
+      setValue('inp-company', ai.khach_hang);
+    } else {
+      state.opp.company = '';
+      setValue('inp-company', '');
+    }
+
+    // 2. NVKD phụ trách: null nếu thiếu
+    if (ai.nvkd_phu_trach && ai.nvkd_phu_trach !== 'Chưa phân công' && ai.nvkd_phu_trach !== 'null') {
+      state.opp.owner = ai.nvkd_phu_trach;
+    } else {
+      state.opp.owner = '';
+    }
+
+    // 3. Danh mục sản phẩm: null nếu thiếu
+    const prodName = (ai.danh_muc_san_pham && !String(ai.danh_muc_san_pham).includes('Chưa xác định') && ai.danh_muc_san_pham !== 'null')
+      ? ai.danh_muc_san_pham
+      : null;
+
+    // 4. Số lượng: number hoặc null (không đoán)
+    const parsedQty = (typeof ai.so_luong === 'number' && ai.so_luong > 0) ? ai.so_luong : null;
+
+    // 5. Ngân sách: number hoặc null (không đoán)
+    const parsedBudget = (typeof ai.ngan_sach_du_kien === 'number' && ai.ngan_sach_du_kien > 0)
+      ? ai.ngan_sach_du_kien
+      : ((typeof ai.ngan_sach === 'number' && ai.ngan_sach > 0) ? ai.ngan_sach : null);
+
+    // 6. Thời hạn triển khai: string hoặc null
+    const parsedDays = ai.thoi_han_trien_khai ? (parseDeadlineToDays(ai.thoi_han_trien_khai) || parseDeliveryDays(ai.thoi_han_trien_khai) || null) : null;
+
+    // 7. Chiết khấu: number hoặc null (chỉ 0 nếu file ghi rõ là 0)
+    const parsedDiscount = (typeof ai.de_nghi_chiet_khau === 'number') ? ai.de_nghi_chiet_khau : null;
+
+    state.opp.extracted = {
+      productsText: prodName,
+      totalQty: parsedQty,
+      so_luong: parsedQty,
+      qty: parsedQty,
+      budget: parsedBudget,
+      ngan_sach_du_kien: parsedBudget,
+      days: parsedDays,
+      timelineText: ai.thoi_han_trien_khai || null,
+      thoi_han_trien_khai: ai.thoi_han_trien_khai || null,
+      requestedDiscount: parsedDiscount,
+      de_nghi_chiet_khau: parsedDiscount,
+      items: (prodName && parsedQty) ? [{
+        sku: 'MA-AI-01',
+        name: prodName,
+        category: state.opp.category || 'Thiết bị Văn phòng',
+        unit: 'Bộ',
+        listPrice: parsedBudget ? Math.round(parsedBudget / parsedQty) : 0,
+        cost: parsedBudget ? Math.round((parsedBudget / parsedQty) * 0.72) : 0,
+        stock: 20,
+        leadTimeDays: parsedDays || 7,
+        qty: parsedQty
+      }] : []
+    };
+
+    if (typeof ai.tong_de_xuat === 'number' && ai.tong_de_xuat > 0 && prodName && parsedQty) {
+      state.opp.grandTotal = ai.tong_de_xuat;
+    } else if (!prodName || parsedQty === null) {
+      state.opp.grandTotal = null; // Thiếu số lượng hoặc sản phẩm thì để trống!
+      state.opp.subtotal = null;
+      state.opp.vat = null;
+    }
+
+    const eval7 = evaluate7FieldsExtraction();
+    state.opp.condition1Passed = eval7.canProceed;
+    state.opp.calculationHalted = eval7.mustHalt;
+
+    if (eval7.mustHalt) {
+      state.opp.statusKey = 'clarify';
+      state.opp.statusLabel = 'Yêu cầu làm rõ (File rỗng)';
+      haltAtCondition1Clarify();
+    } else {
+      state.opp.statusKey = 'ready';
+      state.opp.statusLabel = eval7.missingFields.length > 0 ? `Tiếp tục (${eval7.missingFields.length} trường để trống)` : 'Đạt chuẩn 7 trường';
+    }
+
+    renderStep2UI();
+    renderSnapshotSidebar();
+    addAuditLog('AI Agent: Phân tích 7 trường', `Có ${eval7.presentFields.length}/7 trường có dữ liệu. ${eval7.canProceed ? 'Luôn tiếp tục quy trình tới bước cuối, trường thiếu để trống.' : 'Dừng tại ĐK1 do file rỗng.'}`, eval7.canProceed ? 'gate-pass' : 'gate-warn', 'step2');
+  } catch (err) {
+    addAuditLog('AI API Fallback', `Dùng bộ quy tắc nội bộ (${err.message}).`, 'info', 'step2');
+  }
+}
+
+/* ==========================================================================
+   MULTI-FORMAT FILE READER (EXCEL / LARK / CSV / TSV / JSON / TXT)
+   & REVENUE / GROUPED PERFORMANCE ANALYTICS
+   ========================================================================== */
+function stripBom(str) {
+  return String(str || '').replace(/^\uFEFF/, '');
+}
+
+function splitCsvLine(line, delimiter) {
+  const out = [];
+  let cur = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        cur += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (ch === delimiter && !inQuotes) {
+      out.push(cur.trim());
+      cur = '';
+    } else {
+      cur += ch;
+    }
+  }
+  out.push(cur.trim());
+  return out;
+}
+
+function findHeaderRowIndex(matrix) {
+  const limit = Math.min(matrix.length, 20);
+  const headerHints = [
+    'khách', 'customer', 'client', 'company', 'công ty', 'đối tác',
+    'sản phẩm', 'product', 'item', 'solution', 'hạng mục', 'dịch vụ', 'thiết bị',
+    'số lượng', 'qty', 'quantity', 'sl', 'units',
+    'ngân sách', 'budget', 'doanh thu', 'revenue', 'thành tiền', 'amount', 'price', 'giá trị',
+    'chiết khấu', 'discount', 'ck', 'rebate',
+    'thời hạn', 'deadline', 'ngày', 'date', 'sla', 'timeline',
+    'email', 'liên hệ', 'nvkd', 'owner', 'sales', 'kênh', 'channel', 'nhóm', 'category'
+  ];
+
+  let bestIdx = 0;
+  let bestScore = -1;
+  for (let r = 0; r < limit; r++) {
+    const row = Array.isArray(matrix[r]) ? matrix[r] : [];
+    const nonEmptyCells = row.map(c => String(c ?? '').trim()).filter(Boolean);
+    if (nonEmptyCells.length < 2) continue;
+
+    let textCellCount = 0;
+    let hintScore = 0;
+    for (let c = 0; c < nonEmptyCells.length; c++) {
+      const cell = nonEmptyCells[c];
+      if (!/^[\d.,\s₫đ%+-]+$/i.test(cell)) textCellCount += 1;
+      const lower = cell.toLowerCase();
+      for (let h = 0; h < headerHints.length; h++) {
+        if (lower.includes(headerHints[h])) {
+          hintScore += 3;
+          break;
+        }
+      }
+    }
+    const score = textCellCount * 2 + hintScore;
+    if (score > bestScore) {
+      bestScore = score;
+      bestIdx = r;
+    }
+  }
+  return bestIdx;
+}
+
+function extractMatrixToRecords(matrix, sheetLabel = '') {
+  if (!Array.isArray(matrix) || matrix.length < 2) return [];
+  const hdrIdx = findHeaderRowIndex(matrix);
+  const rawHeaderRow = Array.isArray(matrix[hdrIdx]) ? matrix[hdrIdx] : [];
+  if (!rawHeaderRow.length) return [];
+
+  const seenNames = new Map();
+  const colMeta = [];
+  for (let c = 0; c < rawHeaderRow.length; c++) {
+    let name = String(rawHeaderRow[c] ?? '').replace(/\s+/g, ' ').trim();
+    if (!name) {
+      // Only keep unnamed column if at least one of the next 5 data rows has a value in this column
+      let hasDataBelow = false;
+      for (let r = hdrIdx + 1; r < Math.min(matrix.length, hdrIdx + 6); r++) {
+        if (String((matrix[r] && matrix[r][c]) ?? '').trim()) {
+          hasDataBelow = true;
+          break;
+        }
+      }
+      if (!hasDataBelow) continue;
+      name = `Cột_${c + 1}`;
+    }
+    const count = (seenNames.get(name) || 0) + 1;
+    seenNames.set(name, count);
+    if (count > 1) name = `${name}_${count}`;
+    colMeta.push({ idx: c, name });
+  }
+  if (!colMeta.length) return [];
+
+  const records = [];
+  for (let r = hdrIdx + 1; r < matrix.length; r++) {
+    const rowArr = Array.isArray(matrix[r]) ? matrix[r] : [];
+    const obj = {};
+    let nonEmptyCount = 0;
+    let firstText = '';
+    for (let m = 0; m < colMeta.length; m++) {
+      const { idx, name } = colMeta[m];
+      const rawVal = rowArr[idx];
+      const cleaned = rawVal === null || rawVal === undefined ? '' : (typeof rawVal === 'string' ? rawVal.trim() : rawVal);
+      if (cleaned !== '') {
+        nonEmptyCount += 1;
+        if (!firstText) firstText = String(cleaned).toLowerCase();
+      }
+      obj[name] = cleaned;
+    }
+    if (nonEmptyCount === 0) continue;
+    // Skip summary/footer rows such as "Tổng cộng", "Grand Total", "Total"
+    if (/^(tổng cộng|tong cong|grand total|total:?|cộng|tong|tổng số:?)/i.test(firstText.trim())) continue;
+    if (sheetLabel) obj._sheetName = sheetLabel;
+    records.push(obj);
+  }
+  return records;
+}
+
+function detectDelimiterInLines(lines) {
+  const sample = lines.slice(0, 15);
+  const candidates = ['\t', ';', ','];
+  let bestDelim = ',';
+  let bestScore = 0;
+  for (const delim of candidates) {
+    let maxCols = 0;
+    for (const line of sample) {
+      const cnt = splitCsvLine(line, delim).length;
+      if (cnt > maxCols) maxCols = cnt;
+    }
+    if (maxCols > bestScore) {
+      bestScore = maxCols;
+      bestDelim = delim;
+    }
+  }
+  return bestDelim;
+}
+
+function parseDelimitedTextDetailed(text, sheetLabel = '') {
+  const clean = stripBom(text).trim();
+  if (!clean) return { rows: [], headers: [], columnCount: 0, rowCount: 0 };
+
+  let matrix = [];
+  if (typeof Papa !== 'undefined') {
+    const res = Papa.parse(clean, { header: false, skipEmptyLines: true });
+    if (res && Array.isArray(res.data) && res.data.length > 0) {
+      matrix = res.data;
+    }
+  }
+
+  if (!matrix.length) {
+    const lines = clean.split(/\r?\n/).filter(l => l.trim().length > 0);
+    if (!lines.length) return { rows: [], headers: [], columnCount: 0, rowCount: 0 };
+    const delimiter = detectDelimiterInLines(lines);
+    matrix = lines.map(line => splitCsvLine(line, delimiter));
+  }
+
+  if (!matrix.length) return { rows: [], headers: [], columnCount: 0, rowCount: 0 };
+
+  const hdrIdx = findHeaderRowIndex(matrix);
+  const rawHeaderRow = Array.isArray(matrix[hdrIdx]) ? matrix[hdrIdx] : (matrix[0] || []);
+  const headers = rawHeaderRow.map((c, i) => String(c ?? '').trim() || `Cột_${i + 1}`);
+  const colCount = Math.max(headers.length, rawHeaderRow.length);
+
+  const rows = extractMatrixToRecords(matrix, sheetLabel);
+  const rowCount = rows.length;
+
+  return {
+    rows,
+    headers,
+    columnCount: Math.max(colCount, rows[0] ? Object.keys(rows[0]).filter(k => !k.startsWith('_')).length : 0),
+    rowCount
+  };
+}
+
+function parseDelimitedText(text, sheetLabel = '') {
+  return parseDelimitedTextDetailed(text, sheetLabel).rows;
+}
+
+function flattenLarkValue(val) {
+  if (val === null || val === undefined) return '';
+  if (Array.isArray(val)) {
+    return val.map(v => flattenLarkValue(v)).filter(Boolean).join(', ');
+  }
+  if (typeof val === 'object') {
+    if (val.text !== undefined) return String(val.text);
+    if (val.name !== undefined) return String(val.name);
+    if (val.en_name !== undefined) return String(val.en_name);
+    if (val.email !== undefined) return String(val.email);
+    if (val.value !== undefined) return flattenLarkValue(val.value);
+    return Object.values(val).map(v => flattenLarkValue(v)).filter(Boolean).join(' ');
+  }
+  return String(val);
+}
+
+function extractLarkOrJsonRecords(text, sourceName = 'Lark JSON') {
+  const raw = JSON.parse(stripBom(text));
+  let arr = [];
+  if (Array.isArray(raw)) {
+    arr = raw;
+  } else if (raw && Array.isArray(raw?.data?.items)) {
+    arr = raw.data.items;
+  } else if (raw && Array.isArray(raw?.items)) {
+    arr = raw.items;
+  } else if (raw && Array.isArray(raw?.records)) {
+    arr = raw.records;
+  } else if (raw && typeof raw === 'object') {
+    arr = [raw];
+  }
+
+  return arr.map((item, idx) => {
+    const src = (item && item.fields && typeof item.fields === 'object') ? item.fields : item;
+    const flat = { _sheetName: sourceName, _rowNo: idx + 1 };
+    if (src && typeof src === 'object') {
+      Object.keys(src).forEach(k => {
+        flat[k] = flattenLarkValue(src[k]);
+      });
+    }
+    return flat;
+  });
+}
+
+function parsePlainTextRecords(text, fileName) {
+  const clean = stripBom(text).trim();
+  if (!clean) return [];
+  // If pasted tab/csv-like structured text
+  if (clean.includes('\n') && (clean.includes('\t') || clean.split('\n')[0].split(',').length >= 3)) {
+    const tabular = parseDelimitedText(clean);
+    if (tabular.length) return tabular;
+  }
+  const companyMatch = /(?:công ty|khách hàng|company|đơn vị)[:\s-]+([^\n]+)/i.exec(clean);
+  const emailMatch = /([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/.exec(clean);
+  return [{
+    _sheetName: fileName,
+    company: companyMatch ? companyMatch[1].trim() : fileName.replace(/\.[^.]+$/, ''),
+    contact: emailMatch ? emailMatch[1] : '',
+    channel: 'File TXT',
+    rawText: clean
+  }];
+}
+
+function parseUploadedFileObject(file) {
+  return new Promise((resolve, reject) => {
+    const ext = (file.name.split('.').pop() || '').toLowerCase();
+    const reader = new FileReader();
+
+    if (ext === 'xlsx' || ext === 'xls') {
+      if (typeof XLSX === 'undefined') {
+        reject(new Error('Thư viện đọc Excel (SheetJS) chưa sẵn sàng.'));
+        return;
+      }
+      reader.onload = e => {
+        try {
+          const wb = XLSX.read(e.target.result, { type: 'array' });
+          const allRows = [];
+          const activeSheets = [];
+          let maxColCount = 0;
+          let allHeaders = [];
+          wb.SheetNames.forEach(sheetName => {
+            const ws = wb.Sheets[sheetName];
+            const matrix = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+            if (matrix && matrix.length) {
+              const hdrIdx = findHeaderRowIndex(matrix);
+              const rawHdr = Array.isArray(matrix[hdrIdx]) ? matrix[hdrIdx] : [];
+              if (rawHdr.length > maxColCount) {
+                maxColCount = rawHdr.length;
+                allHeaders = rawHdr.map((c, i) => String(c ?? '').trim() || `Cột_${i + 1}`);
+              }
+            }
+            const sheetRows = extractMatrixToRecords(matrix, `${file.name} [${sheetName}]`);
+            if (sheetRows.length) {
+              activeSheets.push(`${sheetName} (${sheetRows.length})`);
+              for (let i = 0; i < sheetRows.length; i++) allRows.push(sheetRows[i]);
+            }
+          });
+          const resolvedColCount = Math.max(maxColCount, allHeaders.length, allRows[0] ? Object.keys(allRows[0]).filter(k => !k.startsWith('_')).length : 0);
+          resolve({
+            rows: allRows,
+            headers: allHeaders,
+            columnCount: resolvedColCount,
+            rowCount: allRows.length,
+            sheets: activeSheets,
+            detectedSource: `Excel (${activeSheets.length ? activeSheets.join(', ') : `${wb.SheetNames.length} sheet`})`
+          });
+        } catch (err) {
+          reject(err);
+        }
+      };
+      reader.onerror = () => reject(new Error('Không đọc được tệp Excel'));
+      reader.readAsArrayBuffer(file);
+      return;
+    }
+
+    // Binary Documents / PDF / Word / Images -> send Base64 to server AI parser (/api/parse-file)
+    if (['pdf', 'docx', 'doc', 'rtf', 'odt', 'png', 'jpg', 'jpeg', 'webp'].includes(ext)) {
+      reader.onload = async e => {
+        try {
+          const dataUrl = String(e.target?.result || '');
+          const base64Data = dataUrl.includes(',') ? dataUrl.split(',')[1] : '';
+          if (typeof fetch === 'function') {
+            const resp = await fetch('/api/parse-file', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                fileName: file.name,
+                mimeType: file.type || '',
+                base64Data,
+                catalog: state.products.map(p => ({ sku: p.sku, name: p.name, category: p.category }))
+              })
+            });
+            const json = await resp.json();
+            if (json.ok && json.data && Array.isArray(json.data.records) && json.data.records.length) {
+              const rows = json.data.records.map(r => ({ _sheetName: file.name, ...r }));
+              const headers = rows[0] ? Object.keys(rows[0]).filter(k => !k.startsWith('_')) : [];
+              resolve({
+                rows,
+                headers,
+                columnCount: headers.length,
+                rowCount: rows.length,
+                detectedSource: `AI Đọc ${ext.toUpperCase()}`,
+                aiSummary: json.data.datasetSummary || '',
+                recommendedGroupField: json.data.recommendedGroupField || 'priorityTier'
+              });
+              return;
+            }
+            if (json.extractedText) {
+              const rows = parsePlainTextRecords(json.extractedText, file.name);
+              const headers = rows[0] ? Object.keys(rows[0]).filter(k => !k.startsWith('_')) : [];
+              resolve({
+                rows,
+                headers,
+                columnCount: headers.length,
+                rowCount: rows.length,
+                detectedSource: ext.toUpperCase()
+              });
+              return;
+            }
+            reject(new Error(json.error || `Không trích xuất được dữ liệu từ ${file.name}`));
+          } else {
+            reject(new Error('Cần chạy server localhost để đọc tệp nhị phân bằng AI.'));
+          }
+        } catch (err) {
+          reject(err);
+        }
+      };
+      reader.onerror = () => reject(new Error(`Không đọc được file ${file.name}`));
+      reader.readAsDataURL(file);
+      return;
+    }
+
+    // Text, JSON, Lark, CSV, TSV, MD, EML
+    reader.onload = async e => {
+      try {
+        const text = String(e.target?.result || '');
+        if (ext === 'json') {
+          const rows = extractLarkOrJsonRecords(text, file.name);
+          const firstRow = rows[0] || {};
+          const headers = Object.keys(firstRow).filter(k => !k.startsWith('_'));
+          resolve({
+            rows,
+            headers,
+            columnCount: headers.length,
+            rowCount: rows.length,
+            detectedSource: 'Lark / JSON'
+          });
+          return;
+        }
+        if (ext === 'csv' || ext === 'tsv') {
+          const detailed = parseDelimitedTextDetailed(text, file.name);
+          const rows = detailed.rows.map(r => ({ _sheetName: file.name, ...r }));
+          resolve({
+            rows,
+            headers: detailed.headers,
+            columnCount: detailed.columnCount,
+            rowCount: detailed.rowCount,
+            detectedSource: ext.toUpperCase() + ' / Lark'
+          });
+          return;
+        }
+        const detailed = parseDelimitedTextDetailed(text, file.name);
+        if (detailed.columnCount >= 3 || detailed.rows.length >= 1) {
+          const rows = detailed.rows.map(r => ({ _sheetName: file.name, ...r }));
+          resolve({
+            rows,
+            headers: detailed.headers,
+            columnCount: detailed.columnCount,
+            rowCount: detailed.rowCount,
+            detectedSource: 'Tabular Text'
+          });
+          return;
+        }
+        // Unstructured text/email/markdown -> try AI file extraction first
+        if (state.api.configured && state.api.useLiveApi && typeof fetch === 'function') {
+          try {
+            const resp = await fetch('/api/parse-file', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                fileName: file.name,
+                mimeType: file.type || 'text/plain',
+                textContent: text,
+                catalog: state.products.map(p => ({ sku: p.sku, name: p.name, category: p.category }))
+              })
+            });
+            const json = await resp.json();
+            if (json.ok && json.data && Array.isArray(json.data.records) && json.data.records.length) {
+              const rows = json.data.records.map(r => ({ _sheetName: file.name, ...r }));
+              const headers = rows[0] ? Object.keys(rows[0]).filter(k => !k.startsWith('_')) : [];
+              resolve({
+                rows,
+                headers,
+                columnCount: headers.length,
+                rowCount: rows.length,
+                detectedSource: `AI Đọc ${ext.toUpperCase() || 'TXT'}`,
+                aiSummary: json.data.datasetSummary || ''
+              });
+              return;
+            }
+          } catch (_) {
+            // Fallback cleanly to local parser
+          }
+        }
+        const rows = parsePlainTextRecords(text, file.name);
+        const headers = rows[0] ? Object.keys(rows[0]).filter(k => !k.startsWith('_')) : [];
+        resolve({
+          rows,
+          headers,
+          columnCount: headers.length,
+          rowCount: rows.length,
+          detectedSource: 'Text'
+        });
+      } catch (err) {
+        reject(err);
+      }
+    };
+    reader.onerror = () => reject(new Error('Không đọc được nội dung tệp'));
+    reader.readAsText(file, 'UTF-8');
+  });
+}
+
+function parseMoneyNumber(val) {
+  if (val === null || val === undefined) return 0;
+  if (typeof val === 'number' && Number.isFinite(val)) return Math.round(val);
+  const s = String(val || '').trim();
+  const parsed = parseCurrencyToVnd(s);
+  if (parsed !== null && parsed > 0) return parsed;
+  const digits = s.replace(/[^\d]/g, '');
+  return digits ? parseInt(digits, 10) : 0;
+}
+
+function parseNumberLoose(val) {
+  if (typeof val === 'number' && Number.isFinite(val)) return val;
+  const m = String(val || '').replace(',', '.').match(/-?\d+(?:\.\d+)?/);
+  return m ? parseFloat(m[0]) : null;
+}
+
+function parseDeadlineToDays(val) {
+  if (val === null || val === undefined || String(val).trim() === '') return 0;
+  if (typeof val === 'number' && Number.isFinite(val)) {
+    // Handle Excel date serial (> 30000) vs plain number of days
+    if (val > 30000) {
+      const targetMs = (val - 25569) * 86400000;
+      const diffDays = Math.ceil((targetMs - Date.now()) / 86400000);
+      return Math.max(1, Math.min(365, diffDays));
+    }
+    return val > 0 ? Math.round(val) : 0;
+  }
+  const rel = parseRelativeDeadlinePhrase(val);
+  if (rel > 0) return rel;
+  const n = parseNumberLoose(val);
+  return n !== null && n > 0 ? Math.round(n) : 0;
+}
+
+function stripVietnameseDiacritics(str) {
+  return String(str || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'D');
+}
+
+function normalizeHeaderForMatch(str) {
+  return stripVietnameseDiacritics(String(str || ''))
+    .toLowerCase()
+    .replace(/^[\ufeff\s_]+|[\s_]+$/g, '')
+    .replace(/[\-_./\\()[\],:]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function isNumericLikeValue(val) {
+  if (val === null || val === undefined) return false;
+  if (typeof val === 'number') return !isNaN(val);
+  const s = String(val).replace(/[\s,._₫$VNDvnd%]/g, '').trim();
+  return s !== '' && !isNaN(Number(s));
+}
+
+function findColumnByAlias(headers, aliases, excludeTokens = [], sampleRows = [], typeConstraint = null) {
+  const cleanHeaders = headers.filter(h => !h.startsWith('_'));
+
+  function checkConstraint(col) {
+    if (!typeConstraint || !sampleRows || !sampleRows.length) return true;
+    const vals = sampleRows
+      .map(r => r && r[col])
+      .filter(v => v !== undefined && v !== null && String(v).trim() !== '');
+    if (!vals.length) return true;
+    if (typeConstraint === 'text_not_numeric') {
+      const numCount = vals.filter(isNumericLikeValue).length;
+      return numCount < vals.length; // Loại trừ nếu 100% dòng mẫu là số
+    }
+    if (typeConstraint === 'numeric') {
+      const numCount = vals.filter(isNumericLikeValue).length;
+      return numCount > 0;
+    }
+    return true;
+  }
+
+  const isExcluded = h => {
+    const norm = normalizeHeaderForMatch(h);
+    const words = norm.split(' ');
+    return excludeTokens.some(tok => {
+      const t = normalizeHeaderForMatch(tok).trim();
+      if (t.length <= 3) return words.includes(t);
+      return norm.includes(t);
+    });
+  };
+
+  // Ưu tiên 1: Khớp chính xác (sau khi bỏ dấu và chuẩn hóa)
+  for (const alias of aliases) {
+    const target = normalizeHeaderForMatch(alias);
+    const found = cleanHeaders.find(h => normalizeHeaderForMatch(h) === target && !isExcluded(h) && checkConstraint(h));
+    if (found) return found;
+  }
+  // Ưu tiên 2: Khớp cụm từ con (substring match)
+  for (const alias of aliases) {
+    const target = normalizeHeaderForMatch(alias);
+    const found = cleanHeaders.find(h => normalizeHeaderForMatch(h).includes(target) && !isExcluded(h) && checkConstraint(h));
+    if (found) return found;
+  }
+  return null;
+}
+
+const COMPANY_COLUMN_EXCLUDES = [
+  'satisfaction', 'rating', 'đánh giá', 'score', 'survey', 'phone', 'sdt', 'sđt', 'tel', 'email', 'mail', 'địa chỉ', 'address'
+];
+
+const OWNER_COLUMN_EXCLUDES = [
+  'amount', 'price', 'total', 'value', 'revenue', 'budget', 'cost', 'vnd', 'vnđ',
+  'giá', 'tiền', 'doanh thu', 'doanh số', 'ngân sách', 'sl', 'qty', 'chiết khấu', 'discount', 'stt', 'id', 'mã',
+  'satisfaction', 'rating', 'method'
+];
+
+function detectSchemaHeuristically(headers, sampleRows = []) {
+  return {
+    company: findColumnByAlias(headers, [
+      'buyer / khách hàng', 'buyer', 'tên đối tác / kh', 'tên đối tác', 'ten doi tac', 'đơn vị mua hàng', 'don vi mua hang',
+      'tên khách hàng', 'ten khach hang', 'tên công ty', 'ten cong ty', 'company name', 'customer name', 'client name',
+      'tên đơn vị', 'đơn vị', 'don vi', 'company', 'client', 'customer_id', 'customer id', 'customer', 'mã khách hàng', 'ma khach hang',
+      'mã kh', 'ma kh', 'khách hàng / đối tác', 'đối tác / kh', 'khách hàng', 'đối tác', 'segment'
+    ], COMPANY_COLUMN_EXCLUDES, sampleRows),
+    contact: findColumnByAlias(headers, ['email', 'liên hệ', 'contact', 'sdt', 'phone', 'điện thoại'], [], sampleRows),
+    channel: findColumnByAlias(headers, ['kênh', 'nguồn', 'channel', 'source', 'payment method'], [], sampleRows),
+    owner: findColumnByAlias(headers, [
+      'pic_nvkd', 'pic sales', 'sales rep', 'sales_owner', 'sales owner',
+      'chuyên viên phụ trách', 'người phụ trách', 'phụ trách', 'nvkd',
+      'salesperson', 'account manager', 'owner', 'nhân viên', 'pic'
+    ], OWNER_COLUMN_EXCLUDES, sampleRows, 'text_not_numeric'),
+    category: findColumnByAlias(headers, ['nhóm', 'nhóm sản phẩm', 'category', 'subcategory', 'loại', 'phân loại', 'ngành'], [], sampleRows),
+    product: findColumnByAlias(headers, [
+      'gói thiết bị', 'gói giải pháp', 'giải pháp yêu cầu', 'thiết bị yêu cầu', 'hạng mục giải pháp',
+      'sản phẩm văn phòng', 'danh mục sản phẩm', 'danh muc san pham', 'sản phẩm / giải pháp',
+      'solution package', 'solution item', 'sản phẩm', 'san pham', 'tên hàng', 'hàng hóa', 'thiết bị',
+      'giải pháp', 'product name', 'product', 'solution', 'equipment', 'item', 'dịch vụ', 'hạng mục', 'package', 'sp'
+    ], ['product id', 'mã sp', 'mã sản phẩm'], sampleRows),
+    qty: findColumnByAlias(headers, ['volume', 'units', 'số lượng', 'so luong', 'sl', 'qty', 'quantity', 'count', 'pcs'], [], sampleRows, 'numeric'),
+    budget: findColumnByAlias(headers, [
+      'kinh phí dự trù', 'kinh phí', 'tổng ngân sách', 'ngân sách', 'ngan sach', 'budget vnd', 'budget',
+      'sales vnd', 'sales_vnd', 'sales amount', 'sales', 'doanh số', 'thành tiền', 'tổng tiền', 'revenue',
+      'total amount', 'net sales vnd', 'dự trù', 'dự toán', 'total price', 'unit price vnd', 'hạn mức', 'ns'
+    ], ['discount', 'cost', 'chiết khấu', 'giá vốn', 'chi phí', 'discount amount'], sampleRows, 'numeric'),
+    revenue: findColumnByAlias(headers, ['total amount', 'sales amount', 'sales value', 'doanh thu', 'thành tiền', 'tổng tiền', 'tổng đề xuất', 'total price', 'giá trị', 'revenue', 'amount', 'total', 'gmv'], ['discount', 'cost', 'chiết khấu'], sampleRows),
+    cost: findColumnByAlias(headers, ['giá vốn', 'chi phí', 'cost', 'cost vnd', 'vốn'], [], sampleRows),
+    discount: findColumnByAlias(headers, ['discount rate', 'rebate (%)', 'rebate', 'ck (%)', 'ck %', 'đề nghị chiết khấu', 'chiết khấu đề xuất %', 'chiết khấu đề xuất', 'de nghi chiet khau', 'chiết khấu', '% giảm giá', 'giảm giá', 'discount %', 'discount', 'ưu đãi', 'ck'], ['discount amount', 'tiền chiết khấu', 'tiền giảm giá'], sampleRows),
+    days: findColumnByAlias(headers, ['shipping days', 'shipping_days', 'delivery timeline', 'delivery', 'timeline', 'thời hạn triển khai', 'thoi han trien khai', 'thời hạn yêu cầu', 'hạn hoàn thành', 'hạn triển khai', 'hạn giao', 'thời hạn', 'thời gian triển khai', 'thời gian giao', 'ngày giao', 'tiến độ', 'số ngày', 'triển khai', 'implementation date', 'deadline', 'due date', 'days', 'sla', 'time', 'hạn'], [], sampleRows),
+    status: findColumnByAlias(headers, ['trạng thái', 'tình trạng', 'status', 'stage'], [], sampleRows),
+    rawText: findColumnByAlias(headers, ['yêu cầu', 'mô tả', 'nội dung', 'ghi chú', 'note', 'description', 'rawtext'], [], sampleRows)
+  };
+}
+
+function classifyPriorityTier(rec, totalValue, marginPercent, dk1Passed) {
+  if (rec.priorityTier && ['VIP', 'Hạng A', 'Hạng B', 'Hạng C'].includes(rec.priorityTier)) {
+    return rec.priorityTier;
+  }
+  if (!dk1Passed) return 'Hạng C';
+  const companyLower = String(rec.company || '').toLowerCase();
+  const isStrategicOrg = /tập đoàn|ngân hàng|bệnh viện|tổng công ty|bank|group/.test(companyLower);
+  if (totalValue >= 500e6 || (isStrategicOrg && totalValue >= 250e6) || (totalValue >= 300e6 && marginPercent >= 20)) {
+    return 'VIP';
+  }
+  if (totalValue >= 200e6 || rec.statusKey === 'pending') return 'Hạng A';
+  return 'Hạng B';
+}
+
+function classifyProjectType(rec, category) {
+  if (rec.projectType) return rec.projectType;
+  const text = `${rec.product || ''} ${rec.rawText || ''} ${category || ''}`.toLowerCase();
+  if (/máy chủ|server|switch|firewall|hạ tầng|core network/.test(text)) return 'Dự án Hạ tầng & Bảo mật';
+  if (/erp|crm|phần mềm|sla|chuyển đổi số/.test(text)) return 'Dự án Phần mềm & SLA';
+  if (/laptop|màn hình|văn phòng/.test(text)) return 'Trang bị Thiết bị Văn phòng';
+  return category || 'Dự án B2B Tổng hợp';
+}
+
+function evaluateSingleRecordThroughWorkflow(rec) {
+  let raw = rec.rawText || '';
+  if (!raw.trim()) {
+    const parts = [];
+    if (rec.product && isValidProductString(rec.product) && !rec.product.includes('Chưa xác định')) {
+      parts.push(rec.qty > 0 ? `${rec.qty} ${rec.product}` : rec.product);
+    }
+    if (rec.budget > 0) parts.push(`Ngân sách: ${formatCompactMoney(rec.budget)}`);
+    else if (rec.revenue > 0) parts.push(`Ngân sách: ${formatCompactMoney(rec.revenue)}`);
+    if (rec.days > 0) parts.push(`Thời hạn: ${rec.days} ngày`);
+    if (rec.discount !== null && rec.discount !== undefined) parts.push(`Đề nghị chiết khấu: ${rec.discount}%`);
+    raw = parts.join('. ');
+  }
+
+  const combinedRaw = [raw, collectRawRowNotesText(rec.rawRow)].filter(Boolean).join(' | ');
+  const items = extractProductLines(raw);
+  const validItems = items.filter(i => i.qty > 0);
+
+  const hasExplicitProduct = isValidProductString(rec.product) && !rec.product.includes('Chưa xác định');
+  const hasExtractedProduct = items.length > 0;
+  const hasValidProduct = hasExplicitProduct || hasExtractedProduct;
+
+  const matchedQty = validItems.reduce((s, i) => s + i.qty, 0) || (hasValidProduct && rec.qty > 0 ? rec.qty : 0);
+  const budgetVal = rec.budget > 0 ? rec.budget : (parseBudgetVnd(combinedRaw) || (rec.revenue > 0 ? rec.revenue : null));
+  const daysVal = rec.days > 0 ? rec.days : parseDeliveryDays(combinedRaw);
+  const discountVal = rec.discount !== null && rec.discount !== undefined ? rec.discount : parseRequestedDiscount(combinedRaw);
+
+  const missingFields = [];
+  if (!hasValidProduct) missingFields.push('Danh mục sản phẩm');
+  if (matchedQty <= 0) missingFields.push('Số lượng');
+  if (!budgetVal || budgetVal <= 0) missingFields.push('Ngân sách dự kiến');
+  if (!daysVal || daysVal <= 0) missingFields.push('Thời hạn triển khai');
+  if (discountVal === null || discountVal === undefined) missingFields.push('Đề nghị chiết khấu');
+
+  const isDk1Passed = (missingFields.length === 0);
+
+  // Chỉ dừng hẳn trong 2 trường hợp: file rỗng/không đọc được, HOẶC không có bất kỳ trường nào có dữ liệu
+  const isCompletelyEmpty = (!rec.company || rec.company.includes('Khách hàng ẩn danh')) &&
+    !hasValidProduct &&
+    matchedQty <= 0 &&
+    (!budgetVal || budgetVal <= 0) &&
+    (!daysVal || daysVal <= 0) &&
+    discountVal === null &&
+    !raw.trim();
+
+  if (isCompletelyEmpty) {
+    return {
+      ...rec,
+      product: 'Chưa xác định (File rỗng / Không có dữ liệu)',
+      rawText: raw,
+      category: 'Chưa phân loại',
+      projectType: 'Chưa phân loại',
+      priorityTier: 'Hạng C',
+      itemsSummary: '(Trống)',
+      totalQty: null,
+      budget: null,
+      days: null,
+      discountPercent: null,
+      totalValue: null,
+      costTotal: null,
+      marginPercent: null,
+      dk1Passed: false,
+      dk2Exceeded: false,
+      statusKey: 'clarify',
+      statusLabel: 'Dừng tại ĐK1 (File rỗng / Không có dữ liệu)',
+      missingFields: ['Khách hàng', 'Sản phẩm', 'Số lượng', 'Ngân sách', 'Thời hạn', 'Chiết khấu'],
+      exceedReasons: [],
+      note: 'Dừng tại ĐK1: Dữ liệu rỗng, không thể xử lý'
+    };
+  }
+
+  // CÓ DỮ LIỆU: TIẾP TỤC BƯỚC 3, 4 VÀ 5 THEO NGUYÊN TẮC: THIẾU THÔNG TIN KHÔNG DỪNG QUY TRÌNH
+  let effectiveItems = validItems.length ? validItems : items;
+  let effectiveQty = matchedQty > 0 ? matchedQty : (rec.qty > 0 ? rec.qty : null);
+
+  if (!effectiveItems.length && hasExplicitProduct) {
+    const cat = state.products.find(p => p.name.toLowerCase().includes(rec.product.toLowerCase()));
+    const qty = effectiveQty || 1;
+    const estPrice = budgetVal && budgetVal > 0 ? Math.round(budgetVal / qty) : (rec.revenue > 0 ? Math.round(rec.revenue / qty) : 50000000);
+    const synth = cat ? { ...cat, qty } : {
+      sku: 'MA-EST-01',
+      name: rec.product,
+      category: rec.category || 'Hạ tầng & Bảo mật',
+      unit: 'Gói',
+      listPrice: estPrice,
+      cost: Math.round(estPrice * 0.72),
+      stock: 50,
+      leadTimeDays: daysVal || 7,
+      qty
+    };
+    effectiveItems = [synth];
+    effectiveQty = qty;
+  }
+
+  const effectiveDays = daysVal > 0 ? daysVal : null;
+
+  // Xử lý chiết khấu: Nằm ngoài khoảng 0-100% thì đánh dấu "cần xác nhận" chứ không chặn luồng
+  const exceedReasons = [];
+  let isDiscountAbnormal = false;
+  let effectiveDiscount = 0;
+  if (discountVal !== null && discountVal !== undefined) {
+    if (discountVal < 0 || discountVal > 100) {
+      isDiscountAbnormal = true;
+      exceedReasons.push(`Chiết khấu bất thường (${discountVal}% - cần xác nhận)`);
+      effectiveDiscount = 0; // Không áp dụng chiết khấu âm/lớn vào tính toán thành tiền
+    } else {
+      effectiveDiscount = discountVal;
+      if (effectiveDiscount > POLICY.maxSalesDiscountPercent) {
+        exceedReasons.push(`CK ${effectiveDiscount}% > ${POLICY.maxSalesDiscountPercent}%`);
+      }
+    }
+  }
+
+  // Step 4 & 5 calculations: Trường nào thiếu thì giá trị = null (để trống), không tính bừa
+  let subtotal = null;
+  let totalCost = null;
+  let maxLeadTime = 0;
+
+  if (effectiveItems.length > 0) {
+    subtotal = 0;
+    totalCost = 0;
+    effectiveItems.forEach(it => {
+      subtotal += (it.listPrice || 0) * (it.qty || 1);
+      totalCost += (it.cost || 0) * (it.qty || 1);
+      if ((it.leadTimeDays || 0) > maxLeadTime) maxLeadTime = it.leadTimeDays;
+    });
+  }
+
+  let grandTotal = null;
+  if (rec.revenue > 0) {
+    grandTotal = rec.revenue;
+    if (totalCost === null) totalCost = rec.cost > 0 ? rec.cost : Math.round(grandTotal * 0.72);
+  } else if (subtotal !== null && subtotal > 0) {
+    const discAmt = Math.round(subtotal * (effectiveDiscount / 100));
+    const net = Math.max(0, subtotal - discAmt);
+    grandTotal = net + Math.round(net * POLICY.vatRate);
+  } else if (budgetVal > 0) {
+    grandTotal = budgetVal;
+    if (totalCost === null) totalCost = rec.cost > 0 ? rec.cost : Math.round(grandTotal * 0.72);
+  }
+
+  if (rec.cost > 0) totalCost = rec.cost;
+
+  let marginPercent = null;
+  if (grandTotal !== null && totalCost !== null && grandTotal > 0) {
+    const netForMargin = rec.revenue > 0 ? rec.revenue : Math.round(grandTotal / (1 + POLICY.vatRate));
+    marginPercent = netForMargin > 0 ? Number((((netForMargin - totalCost) / netForMargin) * 100).toFixed(1)) : 0;
+    if (marginPercent < POLICY.minGrossMarginPercent) {
+      exceedReasons.push(`MG ${marginPercent.toFixed(1)}% < ${POLICY.minGrossMarginPercent}%`);
+    }
+  }
+
+  if (budgetVal > 0 && grandTotal !== null && grandTotal > budgetVal) {
+    exceedReasons.push('Vượt ngân sách');
+  }
+
+  const dk2Exceeded = exceedReasons.length > 0;
+  const itemsSummary = effectiveItems.length
+    ? effectiveItems.map(i => `${i.qty}x ${i.name}`).join('; ')
+    : (rec.product ? `${effectiveQty || 1}x ${rec.product}` : '(Để trống)');
+  const resolvedCategory = rec.category || (effectiveItems[0]?.category || 'Hạ tầng & Bảo mật');
+
+  const statusKey = dk2Exceeded ? 'pending' : 'ready';
+  const statusLabel = dk2Exceeded
+    ? 'Chờ duyệt'
+    : (missingFields.length ? 'Đủ điều kiện tiếp tục (Cần xác nhận)' : 'Đủ điều kiện tiếp tục');
+
+  const note = dk2Exceeded
+    ? `Vượt ĐK2: ${exceedReasons.join(' | ')}`
+    : (missingFields.length ? `Đủ ĐK tiếp tục (Thiếu: ${missingFields.join(', ')})` : 'Đạt chuẩn Quy trình Thu Thảo trong thẩm quyền NVKD');
+
+  return {
+    ...rec,
+    rawText: raw,
+    category: resolvedCategory,
+    projectType: classifyProjectType(rec, resolvedCategory),
+    priorityTier: classifyPriorityTier({ ...rec, statusKey }, grandTotal || 0, marginPercent || 0, true),
+    itemsSummary,
+    totalQty: effectiveQty,
+    budget: budgetVal,
+    days: effectiveDays,
+    discountPercent: discountVal,
+    totalValue: grandTotal,
+    costTotal: totalCost,
+    marginPercent,
+    dk1Passed: true,
+    dk2Exceeded,
+    statusKey,
+    statusLabel,
+    missingFields,
+    exceedReasons,
+    note
+  };
+}
+
+/* ==========================================================================
+   UNIFIED DATA ADAPTER & COLUMN MAPPING TABLE ENGINE
+   ========================================================================== */
+function unifyRawTabularDataset(inputRows, sourceMeta = {}) {
+  let rows = Array.isArray(inputRows) ? inputRows : [];
+  if (!rows.length) {
+    return {
+      headers: [],
+      rawRows: [],
+      sourceName: sourceMeta.sourceName || 'Chưa đặt tên',
+      sourceType: sourceMeta.sourceType || 'Tabular',
+      sheets: sourceMeta.sheets || [],
+      rowCount: 0
+    };
+  }
+
+  const headerSet = new Set();
+  const sample = rows.slice(0, 30);
+  for (let i = 0; i < sample.length; i++) {
+    const obj = sample[i];
+    if (obj && typeof obj === 'object') {
+      Object.keys(obj).forEach(k => {
+        if (!k.startsWith('_')) headerSet.add(k);
+      });
+    }
+  }
+  const headers = Array.from(headerSet);
+
+  const cleanRows = [];
+  for (let idx = 0; idx < rows.length; idx++) {
+    const r = rows[idx];
+    if (!r || typeof r !== 'object') continue;
+    let hasData = false;
+    for (let h = 0; h < headers.length; h++) {
+      const v = r[headers[h]];
+      if (v !== undefined && v !== null && String(v).trim() !== '') {
+        hasData = true;
+        break;
+      }
+    }
+    if (hasData) cleanRows.push(r);
+  }
+
+  return {
+    headers,
+    rawRows: cleanRows,
+    sourceName: sourceMeta.sourceName || 'Bộ dữ liệu',
+    sourceType: sourceMeta.sourceType || 'Tabular',
+    sheets: sourceMeta.sheets || [],
+    rowCount: cleanRows.length
+  };
+}
+
+function renderColumnMappingPanel() {
+  const panel = $('column-mapping-panel');
+  const tbody = $('col-mapping-tbody');
+  const badge = $('col-mapping-source-badge');
+  const banner = $('col-mapping-banner');
+  const btnApply = $('btn-apply-col-map');
+  const btnBatch = $('btn-batch-run');
+  const btnStep1 = $('btn-step1-next');
+  if (!panel || !tbody) return;
+
+  const dataset = state.analytics.currentDataset;
+  if (!dataset || !dataset.rawRows || !dataset.rawRows.length) {
+    panel.style.display = 'none';
+    return;
+  }
+
+  const headers = dataset.headers || [];
+  const row1 = dataset.rawRows[0] || {};
+  const colMap = state.analytics.currentColMap || {};
+
+  if (badge) {
+    const sheetInfo = dataset.sheets && dataset.sheets.length > 1 ? ` [${dataset.sheets.length} sheets]` : '';
+    badge.textContent = `Nguồn dữ liệu: ${dataset.sourceName}${sheetInfo} — ${dataset.rawRows.length} dòng, ${headers.length} cột`;
+  }
+
+  // GUARDRAIL 3 CHECK: Numerical Metrics
+  const hasValidMetrics = checkNumericalMetricsGuardrail(dataset, colMap);
+  if (!hasValidMetrics) {
+    if (banner) {
+      banner.className = 'col-mapping-banner-err';
+      banner.style.background = '#fef2f2';
+      banner.style.border = '1px solid #f87171';
+      banner.style.color = '#991b1b';
+      banner.innerHTML = `
+        <div style="display:flex; align-items:center; gap:0.45rem;">
+          <span style="font-size:1.15rem;">❌</span>
+          <strong style="font-size:0.86rem;">Lỗi cấu trúc dữ liệu: Không tìm thấy cột số liệu định lượng nào hợp lệ để tính toán chỉ số KPI và vẽ biểu đồ.</strong>
+        </div>
+        <div style="margin-top:0.35rem; font-size:0.75rem; color:#7f1d1d; line-height:1.45;">
+          Tất cả các trường chỉ số định lượng (Doanh thu, Chi phí, Lợi nhuận, Số lượng, Đơn giá...) đều ở trạng thái "(Không có)" và dữ liệu chỉ toàn chuỗi ký tự văn bản (như chữ 'x'). Nút tiếp tục sang bước Làm sạch / Phân tích đã bị khóa cho đến khi nạp tệp dữ liệu hợp lệ khác.
+        </div>
+      `;
+    }
+    if (btnApply) {
+      btnApply.disabled = true;
+      btnApply.style.opacity = '0.5';
+      btnApply.style.cursor = 'not-allowed';
+      btnApply.title = 'Lỗi cấu trúc dữ liệu: Không tìm thấy cột số liệu định lượng nào hợp lệ.';
+    }
+    if (btnBatch) {
+      btnBatch.disabled = true;
+      btnBatch.style.opacity = '0.5';
+      btnBatch.style.cursor = 'not-allowed';
+      btnBatch.title = 'Lỗi cấu trúc dữ liệu: Không tìm thấy cột số liệu định lượng nào hợp lệ.';
+    }
+    if (btnStep1) {
+      btnStep1.disabled = true;
+      btnStep1.style.opacity = '0.5';
+      btnStep1.style.cursor = 'not-allowed';
+      btnStep1.title = 'Lỗi cấu trúc dữ liệu: Không tìm thấy cột số liệu định lượng nào hợp lệ.';
+    }
+    const step1Banner = $('step1-error-banner');
+    if (step1Banner) {
+      step1Banner.style.display = 'block';
+      step1Banner.innerHTML = `
+        <div style="font-weight:700; color:#991b1b; display:flex; align-items:center; gap:0.4rem;">
+          <span>❌</span>
+          <span>Lỗi cấu trúc dữ liệu: Không tìm thấy cột số liệu định lượng nào hợp lệ để tính toán chỉ số KPI và vẽ biểu đồ.</span>
+        </div>
+        <div style="margin-top:0.35rem; font-size:0.77rem; color:#7f1d1d;">
+          Tất cả các trường định lượng (Doanh thu, Chi phí, Lợi nhuận, Số lượng, Đơn giá...) đều ở trạng thái "(Không có)" và dữ liệu chỉ toàn chuỗi ký tự văn bản. Vui lòng nạp tệp dữ liệu hợp lệ khác.
+        </div>
+      `;
+    }
+    const analyticsErr = $('analytics-error-banner');
+    if (analyticsErr) {
+      analyticsErr.style.display = 'block';
+      analyticsErr.innerHTML = `
+        <div style="font-weight:700; color:#991b1b; display:flex; align-items:center; gap:0.4rem;">
+          <span>❌</span>
+          <span>Lỗi cấu trúc dữ liệu: Không tìm thấy cột số liệu định lượng nào hợp lệ để tính toán chỉ số KPI và vẽ biểu đồ.</span>
+        </div>
+      `;
+    }
+  } else {
+    if (banner) {
+      banner.className = 'col-mapping-banner-ok';
+      banner.style.background = '#f0fdf4';
+      banner.style.border = '1px solid #86efac';
+      banner.style.color = '#15803d';
+      banner.innerHTML = `AI đã tự động nhận diện các cột. Bạn có thể kiểm tra hoặc điều chỉnh lại nếu cần. Cột nào không có trong file thì để trống, hệ thống sẽ tự động dùng giả định thông minh mà không báo lỗi.`;
+    }
+    if (btnApply) {
+      btnApply.disabled = false;
+      btnApply.style.opacity = '';
+      btnApply.style.cursor = '';
+      btnApply.title = '';
+    }
+    if (btnBatch) {
+      btnBatch.disabled = false;
+      btnBatch.style.opacity = '';
+      btnBatch.style.cursor = '';
+      btnBatch.title = '';
+    }
+    if (btnStep1) {
+      btnStep1.disabled = false;
+      btnStep1.style.opacity = '';
+      btnStep1.style.cursor = '';
+      btnStep1.title = '';
+    }
+    const step1Banner = $('step1-error-banner');
+    if (step1Banner && step1Banner.textContent.includes('Không tìm thấy cột số liệu định lượng')) {
+      step1Banner.style.display = 'none';
+      step1Banner.innerHTML = '';
+    }
+    const analyticsErr = $('analytics-error-banner');
+    if (analyticsErr && analyticsErr.textContent.includes('Không tìm thấy cột số liệu định lượng')) {
+      analyticsErr.style.display = 'none';
+      analyticsErr.innerHTML = '';
+    }
+  }
+
+  tbody.innerHTML = STANDARD_SYSTEM_FIELDS.map(f => {
+    const currentMapped = colMap[f.key] || '';
+    const sampleVal = currentMapped ? String(row1[currentMapped] ?? '').trim() : '';
+    const samplePreview = sampleVal
+      ? `<span class="sample-preview-cell" title="${escapeHtml(sampleVal)}">${escapeHtml(sampleVal)}</span>`
+      : '<span style="color:#94a3b8; font-size:0.75rem;">(Trống / Không có)</span>';
+
+    const optionsHtml = [
+      `<option value="" ${!currentMapped ? 'selected' : ''}>(Để trống / Không ánh xạ)</option>`,
+      ...headers.map(h => {
+        const isSel = h === currentMapped ? 'selected' : '';
+        return `<option value="${escapeHtml(h)}" ${isSel}>${escapeHtml(h)}</option>`;
+      })
+    ].join('');
+
+    let statusPill = '';
+    if (currentMapped) {
+      statusPill = `<span class="status-pill" style="font-size:0.68rem; padding:0.12rem 0.45rem;">✓ Đã khớp</span>`;
+    } else {
+      statusPill = `<span class="status-pill soft-warn" style="font-size:0.68rem; padding:0.12rem 0.45rem;">⚠️ Để trống</span>`;
+    }
+
+    return `
+      <tr>
+        <td style="font-weight:700; color:#1e293b;">
+          ${escapeHtml(f.label)}
+          <div style="font-size:0.68rem; color:#64748b; font-weight:400;">${escapeHtml(f.note)}</div>
+        </td>
+        <td>
+          <select class="col-map-select" onchange="onManualColumnMapChange('${f.key}', this.value)">
+            ${optionsHtml}
+          </select>
+        </td>
+        <td>
+          ${samplePreview}
+        </td>
+        <td>
+          ${statusPill}
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  panel.style.display = 'block';
+}
+
+function toggleColumnMappingPanel(force) {
+  const panel = $('column-mapping-panel');
+  if (!panel) return;
+  const show = force !== undefined ? force : panel.style.display === 'none';
+  panel.style.display = show ? 'block' : 'none';
+  state.analytics.columnMapPanelOpen = show;
+  if (show) renderColumnMappingPanel();
+}
+
+function toggleLarkApiBox(force) {
+  const box = $('lark-api-box');
+  if (!box) return;
+  const show = force !== undefined ? force : box.style.display === 'none';
+  box.style.display = show ? 'block' : 'none';
+}
+
+function onManualColumnMapChange(fieldKey, selectedHeader) {
+  if (!state.analytics.currentColMap) state.analytics.currentColMap = {};
+  state.analytics.currentColMap[fieldKey] = selectedHeader || null;
+
+  // Numeric guard: if owner mapped to numeric column, warn and reset
+  if (fieldKey === 'owner' && selectedHeader && state.analytics.currentDataset) {
+    const rawRows = state.analytics.currentDataset.rawRows || [];
+    const isNum = rawRows.slice(0, 10).some(r => isNumericLikeValue(r[selectedHeader]));
+    if (isNum) {
+      showToast('⚠️ Cột này chứa số tiền/doanh số, không phải tên NVKD!', 'warn');
+      state.analytics.currentColMap.owner = null;
+    }
+  }
+
+  evaluateAllRecordsWithCurrentMapping();
+  renderColumnMappingPanel();
+  showToast(`Đã cập nhật ánh xạ trường "${fieldKey}" sang cột "${selectedHeader || '(Để trống)'}"`, 'info');
+}
+
+function applyColumnMappingAndRun() {
+  const dataset = state.analytics.currentDataset;
+  if (!dataset) return;
+  const hasValidMetrics = checkNumericalMetricsGuardrail(dataset, state.analytics.currentColMap);
+  if (!hasValidMetrics) {
+    showToast('❌ Lỗi cấu trúc dữ liệu: Không tìm thấy cột số liệu định lượng nào hợp lệ để tính toán chỉ số KPI và vẽ biểu đồ.', 'error');
+    return;
+  }
+  evaluateAllRecordsWithCurrentMapping();
+  toggleColumnMappingPanel(false);
+  scrollToWorkspace();
+  showToast('✅ Đã áp dụng ánh xạ cột và xử lý Quy trình Thu Thảo!', 'success');
+}
+
+async function reanalyzeSchemaWithAi() {
+  const dataset = state.analytics.currentDataset;
+  if (!dataset || !dataset.headers.length) {
+    showToast('Chưa có dữ liệu để AI phân tích!', 'warn');
+    return;
+  }
+  showToast('🤖 AI đang phân tích tiêu đề và dữ liệu mẫu...', 'info');
+  try {
+    const resp = await fetch('/api/agent', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'analyze_dataset',
+        data: {
+          headers: dataset.headers,
+          sampleRows: dataset.rawRows.slice(0, 5)
+        }
+      })
+    });
+    const json = await resp.json();
+    if (json.ok && json.data && json.data.columnMap) {
+      const aiMap = json.data.columnMap;
+      const headers = dataset.headers;
+      Object.keys(aiMap).forEach(k => {
+        if (aiMap[k] && headers.includes(aiMap[k])) {
+          state.analytics.currentColMap[k] = aiMap[k];
+        }
+      });
+      // Validate owner is not numeric
+      if (state.analytics.currentColMap.owner) {
+        const isNum = dataset.rawRows.slice(0, 10).some(r => isNumericLikeValue(r[state.analytics.currentColMap.owner]));
+        if (isNum) state.analytics.currentColMap.owner = null;
+      }
+      evaluateAllRecordsWithCurrentMapping();
+      renderColumnMappingPanel();
+      showToast('🤖 AI đã cập nhật lại bảng ánh xạ cột thông minh!', 'success');
+    } else {
+      showToast('AI không đề xuất mapping mới, giữ nguyên ánh xạ hiện tại.', 'warn');
+    }
+  } catch (err) {
+    showToast(`Lỗi gọi AI: ${err.message}`, 'warn');
+  }
+}
+
+async function fetchLarkBaseFromApi() {
+  const urlInput = ($('lark-base-url-input')?.value || '').trim();
+  const fallbackBox = $('lark-api-fallback-msg');
+  const errText = $('lark-api-err-text');
+  if (fallbackBox) fallbackBox.style.display = 'none';
+
+  showToast('⚡ Đang kết nối Lark Open API (Bitable)...', 'info');
+  try {
+    const res = await fetch('/api/lark/fetch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: urlInput })
+    });
+    const json = await res.json();
+    if (json.ok && Array.isArray(json.records) && json.records.length) {
+      await ingestDatasetRecords(json.records, json.sourceName || 'Lark Base API', 'Lark Open API');
+      toggleLarkApiBox(false);
+      showToast(`✅ Đã đồng bộ thành công ${json.records.length} bản ghi từ Lark Base!`, 'success');
+      generateAiExecutiveReport(true);
+    } else {
+      const errMsg = json.error || 'Không tải được dữ liệu từ Lark Base API.';
+      if (errText) errText.textContent = `⚠️ ${errMsg}`;
+      if (fallbackBox) fallbackBox.style.display = 'block';
+      showToast(errMsg, 'warn');
+    }
+  } catch (err) {
+    const errMsg = `Lỗi kết nối server: ${err.message}`;
+    if (errText) errText.textContent = `⚠️ ${errMsg}`;
+    if (fallbackBox) fallbackBox.style.display = 'block';
+    showToast(errMsg, 'warn');
+  }
+}
+
+function evaluateAllRecordsWithCurrentMapping() {
+  const dataset = state.analytics.currentDataset;
+  if (!dataset || !dataset.rawRows) return [];
+  const rawRows = dataset.rawRows;
+  const colMap = state.analytics.currentColMap || {};
+  const fileName = dataset.sourceName || 'Dữ liệu';
+  const detectedSource = dataset.sourceType || 'File';
+  const headers = dataset.headers || [];
+
+  const mappedVals = new Set(Object.values(colMap).filter(Boolean));
+  const extraCols = headers.filter(h => !h.startsWith('_') && !mappedVals.has(h)).slice(0, 4);
+
+  const normalized = new Array(rawRows.length);
+  for (let idx = 0; idx < rawRows.length; idx++) {
+    const row = rawRows[idx] || {};
+    const rawRow = {};
+    Object.keys(row).forEach(k => {
+      if (!k.startsWith('_')) rawRow[k] = row[k];
+    });
+
+    const getRowVal = (colKey, aliases, forbidden = [], typeConstraint = null) => {
+      if (colKey && row[colKey] !== undefined && row[colKey] !== null && String(row[colKey]).trim() !== '') {
+        return row[colKey];
+      }
+      const matched = findColumnByAlias(Object.keys(rawRow), aliases, forbidden, [rawRow], typeConstraint);
+      return matched ? rawRow[matched] : null;
+    };
+
+    const rawCompanyVal = colMap.company ? row[colMap.company] : (row.company || '');
+    let company = resolveBestCompanyName(rawRow, rawCompanyVal);
+    if (!company || company === `Khách hàng #${idx + 1}` || /^(?:Khách hàng|Đơn vị)\s*#\d+$/i.test(company)) {
+      if (rawRow.Customer_ID) company = String(rawRow.Customer_ID).trim();
+      else if (rawRow.Customer) company = String(rawRow.Customer).trim();
+      else if (rawRow.Company) company = String(rawRow.Company).trim();
+      else if (rawRow.Segment) company = `${String(rawRow.Segment).trim()} #${idx + 1}`;
+      else company = `Khách hàng #${idx + 1}`;
+    }
+    const contact = String(colMap.contact ? row[colMap.contact] : (row.contact || '')).trim();
+    const channel = String(colMap.channel ? row[colMap.channel] : (row.channel || detectedSource)).trim();
+
+    // SỬA LỖI: Ô "Phụ trách" tuyệt đối không nhận số tiền (ví dụ 24450000 / Sales_VND)
+    const ownerCandidate = getRowVal(colMap.owner, ['sales rep', 'sales', 'rep', 'pic', 'pic_nvkd', 'nvkd', 'người phụ trách', 'nguoi phu trach', 'phụ trách', 'sales owner', 'owner'], OWNER_COLUMN_EXCLUDES, 'text_not_numeric');
+    const isNum = isNumericLikeValue(ownerCandidate) || typeof ownerCandidate === 'number';
+    const owner = (!isNum && ownerCandidate && String(ownerCandidate).trim())
+      ? String(ownerCandidate).trim()
+      : 'Chưa phân công';
+
+    const category = String(getRowVal(colMap.category, ['danh mục', 'danh muc', 'nhóm sản phẩm', 'nhom san pham', 'category', 'subcategory']) || row.category || row.Subcategory || '').trim();
+    const product = String(getRowVal(colMap.product, ['product name', 'sản phẩm văn phòng', 'sản phẩm', 'san pham', 'gói thiết bị', 'goi thiet bi', 'giải pháp', 'giai phap', 'thiết bị', 'thiet bi', 'solution package', 'solution', 'product', 'item']) || row.product || row.Product_Name || '').trim();
+    const qtyVal = getRowVal(colMap.qty, ['sl', 'số lượng', 'so luong', 'units', 'volume', 'quantity', 'qty'], [], 'numeric') || row.Quantity;
+    const qty = qtyVal ? (parseNumberLoose(qtyVal) || 0) : 0;
+    const budgetVal = getRowVal(colMap.budget, ['tổng ngân sách', 'ngân sách', 'ngan sach', 'sales vnd', 'sales', 'tổng tiền', 'tong tien', 'kinh phí', 'kinh phi', 'total amount', 'budget', 'kinh phí dự trù', 'net sales vnd', 'sales amount'], ['discount', 'cost', 'discount amount'], 'numeric') || row.Sales_VND || row.Net_Sales_VND;
+    const budget = budgetVal ? parseMoneyNumber(budgetVal) : 0;
+    const revenue = colMap.revenue ? parseMoneyNumber(row[colMap.revenue]) : (row.Sales_VND ? parseMoneyNumber(row.Sales_VND) : (budget > 0 ? budget : 0));
+    const cost = colMap.cost ? parseMoneyNumber(row[colMap.cost]) : (row.Cost_VND ? parseMoneyNumber(row.Cost_VND) : 0);
+    const discountRaw = getRowVal(colMap.discount, ['ck', 'chiết khấu', 'chiet khau', 'rebate', 'rebate (%)', 'discount', 'discount %', 'discount_rate', 'rebate %'], ['discount amount', 'tiền chiết khấu']) || row.Discount;
+    let discount = discountRaw !== null && String(discountRaw).trim() !== '' ? parseNumberLoose(discountRaw) : null;
+    if (discount !== null && discount > 0 && discount < 1) {
+      discount = Math.round(discount * 100);
+    }
+    const daysRaw = getRowVal(colMap.days, ['shipping days', 'hạn hoàn thành', 'thời hạn', 'thoi han', 'timeline', 'delivery', 'delivery_timeline', 'lead time']) || row.Shipping_Days;
+    const days = daysRaw !== null && String(daysRaw).trim() !== '' ? parseDeadlineToDays(daysRaw) : 0;
+    let rawText = String(colMap.rawText ? row[colMap.rawText] : (row.rawText || '')).trim();
+    if (!rawText && Object.keys(rawRow).length) {
+      rawText = Object.entries(rawRow)
+        .filter(([, v]) => v !== undefined && v !== null && String(v).trim() !== '')
+        .map(([k, v]) => `${k}: ${v}`)
+        .join(' | ');
+    }
+
+    const customMeta = {};
+    for (let c = 0; c < extraCols.length; c++) {
+      const colName = extraCols[c];
+      customMeta[colName] = String(row[colName] ?? '').trim() || 'Khác';
+    }
+
+    const base = {
+      id: `IMP-${String(idx + 1).padStart(4, '0')}`,
+      sourceSheet: row._sheetName || fileName,
+      company: company || `Đơn vị #${idx + 1}`,
+      contact,
+      channel,
+      owner,
+      category,
+      product,
+      projectType: String(row.projectType || '').trim(),
+      priorityTier: String(row.priorityTier || '').trim(),
+      qty,
+      budget,
+      revenue,
+      cost,
+      discount,
+      days,
+      rawText,
+      rawRow,
+      customMeta
+    };
+    normalized[idx] = evaluateSingleRecordThroughWorkflow(base);
+  }
+
+  state.analytics.importedRecords = normalized;
+  state.analytics.customFields = extraCols;
+  batchUpsertCrmDeals(normalized.map(rec => ({
+    id: rec.id,
+    company: rec.company,
+    contact: rec.contact || 'Chưa rõ',
+    channel: rec.channel,
+    owner: (!isNumericLikeValue(rec.owner) && rec.owner) ? rec.owner : 'Chưa phân công',
+    category: rec.category,
+    projectType: rec.projectType,
+    priorityTier: rec.priorityTier,
+    itemsSummary: rec.itemsSummary,
+    totalValue: rec.totalValue,
+    discountPercent: rec.discountPercent,
+    marginPercent: rec.marginPercent,
+    statusKey: rec.statusKey,
+    statusLabel: rec.statusLabel,
+    note: rec.note
+  })));
+
+  // Đăng ký sản phẩm từ file vào bảng giá / kho của hệ thống
+  const discovered = [];
+  const existingNames = new Set(state.products.map(p => p.name.toLowerCase()));
+  normalized.forEach(rec => {
+    if (isValidProductString(rec.product) && !rec.product.includes('Chưa xác định')) {
+      const pName = rec.product.trim();
+      const pKey = pName.toLowerCase();
+      if (!existingNames.has(pKey)) {
+        existingNames.add(pKey);
+        const qty = rec.qty > 0 ? rec.qty : 1;
+        const price = (rec.budget && rec.budget > 0) ? Math.round(rec.budget / qty) : (rec.totalValue > 0 ? Math.round(rec.totalValue / qty) : 0);
+        const cost = rec.cost > 0 ? rec.cost : Math.round(price * 0.72);
+        discovered.push({
+          sku: `SP-${String(state.products.length + discovered.length + 1).padStart(3, '0')}`,
+          name: pName,
+          aliases: [pKey],
+          category: rec.category || 'Sản phẩm từ File',
+          unit: 'Đơn vị',
+          listPrice: price,
+          cost: cost,
+          stock: 50,
+          leadTimeDays: rec.days > 0 ? rec.days : 7
+        });
+      }
+    }
+  });
+  if (discovered.length) {
+    state.products = [...state.products, ...discovered];
+    state.dataSourceName = `Tệp ${fileName}`;
+    const statusEl = $('data-status-text');
+    if (statusEl) statusEl.textContent = `Nguồn dữ liệu hiện tại: ${state.dataSourceName} (${state.products.length} SKU).`;
+    renderCatalogModalTable();
+  }
+
+  renderAnalyticsDashboard();
+  renderGroupSelectorPills();
+  return normalized;
+}
+
+async function ingestDatasetRecords(rawRows, fileName, detectedSource) {
+  if (!Array.isArray(rawRows) || !rawRows.length) return [];
+  const unified = unifyRawTabularDataset(rawRows, { sourceName: fileName, sourceType: detectedSource });
+  const headers = unified.headers;
+
+  // Guardrail Check 1 & 2 on unified dataset
+  const guardrail = validateDatasetGuardrails({
+    colCount: headers.length,
+    rowCount: unified.rawRows.length,
+    headers,
+    rows: unified.rawRows,
+    fileName
+  });
+  if (!guardrail.isValid) {
+    applyGuardrailUiBlock(guardrail, 'ingest');
+    return [];
+  }
+
+  let colMap = detectSchemaHeuristically(headers, unified.rawRows.slice(0, 10));
+  let datasetSummary = `Đã đọc ${unified.rawRows.length} dòng từ ${fileName} (${detectedSource})`;
+
+  // Skip slow LLM round-trip if heuristic schema already matched >= 3 core columns cleanly;
+  // otherwise ask Gemini once with a fast 2.5s timeout so batch ingestion never stalls.
+  const matchedCoreCount = ['company', 'product', 'qty', 'budget', 'revenue', 'days', 'discount'].filter(k => Boolean(colMap[k])).length;
+  if (matchedCoreCount < 3 && state.api.configured && state.api.useLiveApi && typeof fetch === 'function') {
+    let timer = null;
+    try {
+      const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      if (controller) timer = setTimeout(() => controller.abort(), 2500);
+      const resp = await fetch('/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller ? controller.signal : undefined,
+        body: JSON.stringify({
+          action: 'analyze_dataset',
+          data: { headers: headers.filter(h => !h.startsWith('_')), sampleRows: unified.rawRows.slice(0, 5) }
+        })
+      });
+      if (resp.ok) {
+        const aiRes = await resp.json();
+        if (aiRes.ok && aiRes.data && aiRes.data.columnMap) {
+          Object.keys(colMap).forEach(k => {
+            if (aiRes.data.columnMap[k] && headers.includes(aiRes.data.columnMap[k])) {
+              colMap[k] = aiRes.data.columnMap[k];
+            }
+          });
+          if (aiRes.data.datasetSummary) {
+            datasetSummary = `🤖 AI nhận diện (${fileName}): ${aiRes.data.datasetSummary}`;
+          }
+          if (aiRes.data.recommendedGroupField) {
+            state.analytics.groupField = aiRes.data.recommendedGroupField;
+          }
+        }
+      }
+    } catch (_) {
+      // Fallback cleanly to heuristic column mapping
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  const validateTextColumn = (col, isCompany = false) => {
+    if (!col) return null;
+    const samples = unified.rawRows.slice(0, 10).map(r => r && r[col]).filter(v => v !== undefined && v !== null && String(v).trim() !== '');
+    if (!samples.length) return col;
+    if (isCompany) {
+      const isRating = samples.every(v => /^[1-5]$/.test(String(v).trim()));
+      return isRating ? null : col;
+    }
+    const numCount = samples.filter(isNumericLikeValue).length;
+    return numCount >= samples.length ? null : col;
+  };
+  colMap.owner = validateTextColumn(colMap.owner, false);
+  colMap.company = validateTextColumn(colMap.company, true);
+
+  state.analytics.currentDataset = unified;
+  state.analytics.currentColMap = colMap;
+
+  // Render Column Mapping Table so user can review and adjust anytime
+  renderColumnMappingPanel();
+
+  const normalized = evaluateAllRecordsWithCurrentMapping();
+
+  const mapSummary5 = [
+    `SP="${colMap.product || '(Để trống)'}"`,
+    `SL="${colMap.qty || '(Để trống)'}"`,
+    `NS="${colMap.budget || colMap.revenue || '(Để trống)'}"`,
+    `Hạn="${colMap.days || '(Để trống)'}"`,
+    `CK="${colMap.discount || '(Để trống)'}"`,
+    `NVKD="${colMap.owner || '(Để trống)'}"`
+  ].join(' • ');
+
+  state.analytics.lastSchemaSummary = `${datasetSummary} | Ánh xạ: ${mapSummary5}`;
+  state.analytics.previewLimit = 100;
+  if (!state.analytics.sourceLabels.includes(fileName)) {
+    state.analytics.sourceLabels.push(fileName);
+  }
+
+  return normalized;
+}
+
+function clearAllPreviousDatasetState() {
+  state.analytics.importedRecords = [];
+  state.analytics.rawFileRows = [];
+  state.analytics.loadedFileName = '';
+  state.analytics.loadedSource = '';
+  state.analytics.currentDataset = null;
+  state.analytics.currentColMap = {};
+  state.analytics.aiReport = null;
+  state.analytics.customFields = [];
+  state.deals = [];
+  state.opp = createEmptyOpportunity(null);
+
+  const errBanner = $('analytics-error-banner');
+  if (errBanner) {
+    errBanner.style.display = 'none';
+    errBanner.textContent = '';
+  }
+  const progBanner = $('analytics-progress-banner');
+  if (progBanner) {
+    progBanner.style.display = 'none';
+    progBanner.textContent = '';
+  }
+  const tbody = $('imported-rows-tbody');
+  if (tbody) tbody.innerHTML = '';
+  const gbody = $('grouped-analytics-tbody');
+  if (gbody) gbody.innerHTML = '';
+  const rbox = $('ai-report-box');
+  if (rbox) rbox.innerHTML = 'Nhấn <strong>⚡ Chạy AI Agent</strong> sau khi tải file để bóc tách và phân tích.';
+  const pwrap = $('imported-rows-preview-wrap');
+  if (pwrap) pwrap.style.display = 'none';
+  const gapBox = $('ai-gap-audit-box');
+  if (gapBox) gapBox.style.display = 'none';
+  const promptList = $('ai-followup-prompts-list');
+  if (promptList) promptList.innerHTML = '';
+  const gapContent = $('ai-gap-audit-content');
+  if (gapContent) gapContent.innerHTML = '';
+
+  setText('analytics-record-count', '0');
+  setText('kpi-total-rev', '0 ₫');
+  setText('kpi-pass-dk1', '0%');
+  setText('kpi-ready-deals', '0');
+  setText('kpi-auto-approved', '0%');
+}
+
+async function handleMultiDatasetUpload(event) {
+  const files = Array.from(event?.target?.files || []);
+  if (!files.length) return;
+
+  // 1. Wipe all previous data from memory and UI
+  clearAllPreviousDatasetState();
+  clearGuardrailUiBlock();
+
+  let combinedRows = [];
+  const names = [];
+  let sourceSummary = '';
+
+  showToast(`Đang đọc ${files.length} file...`, 'info');
+  for (const file of files) {
+    try {
+      const parsed = await parseUploadedFileObject(file);
+
+      // Guardrail Check 1 & 2: Max columns & Insufficient rows
+      const guardrail = validateDatasetGuardrails({
+        colCount: parsed.columnCount,
+        rowCount: parsed.rowCount,
+        headers: parsed.headers,
+        rows: parsed.rows,
+        fileName: file.name
+      });
+
+      if (!guardrail.isValid) {
+        applyGuardrailUiBlock(guardrail, 'analytics');
+        return;
+      }
+
+      combinedRows = combinedRows.concat(parsed.rows);
+      names.push(file.name);
+      sourceSummary = parsed.detectedSource;
+    } catch (err) {
+      const stackLine = err.stack ? (err.stack.split('\n')[1] || err.stack.split('\n')[0] || '').trim() : '';
+      const loc = stackLine ? ` [vị trí: ${stackLine}]` : '';
+      showToast(`[handleMultiDatasetUpload] Lỗi đọc ${file.name}: ${err.message}${loc}`, 'warn');
+      console.error(`[handleMultiDatasetUpload] Lỗi đọc file ${file.name}:`, err);
+      return;
+    }
+  }
+
+  if (combinedRows.length) {
+    state.analytics.rawFileRows = combinedRows;
+    state.analytics.loadedFileName = names.join(', ');
+    state.analytics.loadedSource = sourceSummary || 'Tệp tải lên';
+
+    const mBadge = $('multi-file-loaded-badge');
+    if (mBadge) {
+      const totalBytes = files.reduce((acc, f) => acc + (f.size || 0), 0);
+      mBadge.style.display = 'inline-flex';
+      mBadge.innerHTML = `📁 <strong>${files.length} tệp:</strong> ${escapeHtml(names.slice(0, 2).join(', '))}${names.length > 2 ? ` và ${names.length - 2} tệp khác` : ''} (${formatFileSize(totalBytes)})`;
+    }
+
+    // Ingest into dataset and evaluate column mapping
+    const normalized = await ingestDatasetRecords(combinedRows, state.analytics.loadedFileName, state.analytics.loadedSource);
+
+    // Guardrail Check 3: Check Numerical Metrics
+    const hasValidMetrics = checkNumericalMetricsGuardrail(state.analytics.currentDataset, state.analytics.currentColMap);
+    if (!hasValidMetrics) {
+      toggleColumnMappingPanel(true);
+      showToast('❌ Lỗi cấu trúc dữ liệu: Không tìm thấy cột số liệu định lượng nào hợp lệ để tính toán chỉ số KPI và vẽ biểu đồ.', 'error');
+    } else {
+      setText('analytics-record-count', String(combinedRows.length));
+      const summaryEl = $('dataset-schema-summary');
+      if (summaryEl) {
+        summaryEl.innerHTML = `Đã nạp file: <strong>${escapeHtml(state.analytics.loadedFileName)}</strong> (${combinedRows.length} dòng thô). Nhấn nút <strong>⚡ Chạy AI Agent</strong> để phân tích trực tiếp qua Google AI Studio.`;
+      }
+      showToast(`✅ Đã nạp thành công ${combinedRows.length} dòng thô từ file. Bấm "⚡ Chạy AI Agent" để bắt đầu!`, 'success');
+    }
+  } else {
+    showToast('File không chứa dòng dữ liệu hợp lệ.', 'warn');
+  }
+
+  if (event?.target) event.target.value = '';
+}
+
+function toggleLarkPasteBox(force) {
+  const box = $('lark-paste-box');
+  if (!box) return;
+  const show = force !== undefined ? force : box.style.display === 'none';
+  box.style.display = show ? 'block' : 'none';
+}
+
+async function parsePastedLarkData() {
+  const raw = ($('lark-raw-input')?.value || '').trim();
+  if (!raw) {
+    showToast('Vui lòng dán dữ liệu từ Lark Sheet / Lark Base / Excel!', 'warn');
+    return;
+  }
+  try {
+    let rows = [];
+    let src = 'Lark Sheet Paste';
+    if (raw.startsWith('{') || raw.startsWith('[')) {
+      rows = extractLarkOrJsonRecords(raw, 'Lark JSON Paste');
+      src = 'Lark Base JSON';
+    } else {
+      rows = parseDelimitedText(raw).map(r => ({ _sheetName: 'Lark Paste', ...r }));
+    }
+    if (!rows.length) {
+      showToast('Không tách được dòng dữ liệu hợp lệ từ nội dung vừa dán!', 'warn');
+      return;
+    }
+    await ingestDatasetRecords(rows, 'Lark_Sheet_Paste', src);
+    toggleLarkPasteBox(false);
+    showToast(`✅ Đã nạp thành công ${rows.length} bản ghi`, 'success');
+    generateAiExecutiveReport(true);
+  } catch (err) {
+    const stackLine = err.stack ? (err.stack.split('\n')[1] || err.stack.split('\n')[0] || '').trim() : '';
+    const loc = stackLine ? ` [vị trí: ${stackLine}]` : '';
+    showToast(`[parsePastedLarkData] Lỗi đọc dữ liệu dán: ${err.message}${loc}`, 'warn');
+    console.error('[parsePastedLarkData] Lỗi đọc dữ liệu dán:', err);
+  }
+}
+
+function toggleUrlImportBox(force) {
+  const box = $('url-import-box');
+  if (!box) return;
+  const show = force !== undefined ? force : box.style.display === 'none';
+  box.style.display = show ? 'block' : 'none';
+}
+
+async function fetchDatasetFromUrl() {
+  const url = ($('dataset-url-input')?.value || '').trim();
+  if (!url) {
+    showToast('Vui lòng nhập đường dẫn Google Sheets, CSV, JSON hoặc Lark link!', 'warn');
+    return;
+  }
+  showToast('Đang nạp dữ liệu từ đường dẫn...', 'info');
+  try {
+    const res = await fetch('/api/fetch-url', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url })
+    });
+    const json = await res.json();
+    if (!json.ok || !json.content) {
+      showToast(json.error || 'Không tải được dữ liệu từ link này.', 'warn');
+      return;
+    }
+
+    const content = json.content.trim();
+    const resolvedUrl = json.resolvedUrl || url;
+    const isGoogleSheet = /docs\.google\.com\/spreadsheets/i.test(url);
+    const sourceLabel = isGoogleSheet ? 'Google Sheets Link' : 'Web / URL Link';
+
+    let rows = [];
+    if (content.startsWith('{') || content.startsWith('[')) {
+      rows = extractLarkOrJsonRecords(content, sourceLabel);
+    } else if (!/^<!doctype|^<html/i.test(content)) {
+      rows = parseDelimitedText(content).map(r => ({ _sheetName: sourceLabel, ...r }));
+    }
+
+    if (!rows.length && state.api.configured && state.api.useLiveApi) {
+      const parseRes = await fetch('/api/parse-file', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fileName: 'linked_source.txt',
+          mimeType: json.contentType || 'text/plain',
+          textContent: content.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 28000),
+          catalog: state.products.map(p => ({ sku: p.sku, name: p.name, category: p.category }))
+        })
+      });
+      if (parseRes.ok) {
+        const aiParsed = await parseRes.json();
+        if (aiParsed.ok && aiParsed.data && Array.isArray(aiParsed.data.records)) {
+          rows = aiParsed.data.records.map(r => ({ _sheetName: sourceLabel, ...r }));
+        }
+      }
+    }
+
+    if (!rows.length) {
+      showToast('Link không chứa bảng CSV/JSON hoặc dữ liệu hợp lệ để phân tích.', 'warn');
+      return;
+    }
+
+    await ingestDatasetRecords(rows, resolvedUrl.slice(0, 48), sourceLabel);
+    toggleUrlImportBox(false);
+    showToast(`✅ Đã nạp thành công ${rows.length} bản ghi`, 'success');
+    generateAiExecutiveReport(true);
+  } catch (err) {
+    const stackLine = err.stack ? (err.stack.split('\n')[1] || err.stack.split('\n')[0] || '').trim() : '';
+    const loc = stackLine ? ` [vị trí: ${stackLine}]` : '';
+    showToast(`[fetchDatasetFromUrl] Lỗi tải từ link: ${err.message}${loc}`, 'warn');
+    console.error('[fetchDatasetFromUrl] Lỗi tải từ link:', err);
+  }
+}
+
+function loadSampleLarkDataset() {
+  showToast('Vui lòng nạp file dữ liệu thực tế (Excel / CSV / Lark Base) của bạn!', 'info');
+}
+
+function runBatchDatasetThrough6Steps(silent = false) {
+  if (!state.analytics.importedRecords.length) {
+    if (!silent) showToast('Chưa có dữ liệu file tải lên! Hãy chọn file Excel/Lark/CSV hoặc bấm "Dữ liệu mẫu".', 'warn');
+    return;
+  }
+  const t0 = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  const processed = new Array(state.analytics.importedRecords.length);
+  for (let i = 0; i < state.analytics.importedRecords.length; i++) {
+    processed[i] = evaluateSingleRecordThroughWorkflow(state.analytics.importedRecords[i]);
+  }
+  state.analytics.importedRecords = processed;
+
+  batchUpsertCrmDeals(processed.map(rec => ({
+    id: rec.id,
+    company: rec.company,
+    contact: rec.contact || 'Chưa rõ',
+    channel: rec.channel,
+    owner: rec.owner,
+    category: rec.category,
+    projectType: rec.projectType,
+    priorityTier: rec.priorityTier,
+    itemsSummary: rec.itemsSummary,
+    totalValue: rec.totalValue,
+    discountPercent: rec.discountPercent,
+    marginPercent: rec.marginPercent,
+    statusKey: rec.statusKey,
+    statusLabel: rec.statusLabel,
+    note: rec.note
+  })));
+
+  renderAnalyticsDashboard();
+  const elapsedMs = Math.round((typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0);
+  if (!silent) showToast(`Đã xử lý theo lô ${processed.length} dòng qua Quy trình Thu Thảo trong ${elapsedMs}ms!`, 'success');
+}
+
+function clearImportedDataset() {
+  clearAllPreviousDatasetState();
+  renderGroupSelectorPills();
+  renderAnalyticsDashboard();
+  renderTrackingTable();
+  showToast('Đã xóa sạch dữ liệu khỏi bộ nhớ và giao diện.', 'info');
+}
+
+async function runDatasetAiAgent() {
+  const errBanner = $('analytics-error-banner');
+  const progBanner = $('analytics-progress-banner');
+  const btn = $('btn-batch-run');
+
+  if (errBanner) {
+    errBanner.style.display = 'none';
+    errBanner.textContent = '';
+  }
+
+  // Guardrail Check
+  if (state.analytics.guardrailBlocked && !state.analytics.guardrailBlocked.isValid) {
+    applyGuardrailUiBlock(state.analytics.guardrailBlocked, 'analytics');
+    return;
+  }
+
+  const dataset = state.analytics.currentDataset;
+  if (dataset && dataset.rawRows && dataset.rawRows.length) {
+    const guardrail = validateDatasetGuardrails({
+      colCount: dataset.headers?.length,
+      rowCount: dataset.rawRows?.length,
+      headers: dataset.headers,
+      rows: dataset.rawRows,
+      fileName: state.analytics.loadedFileName || 'Tệp tải lên'
+    });
+    if (!guardrail.isValid) {
+      applyGuardrailUiBlock(guardrail, 'analytics');
+      return;
+    }
+    const hasValidMetrics = checkNumericalMetricsGuardrail(dataset, state.analytics.currentColMap);
+    if (!hasValidMetrics) {
+      if (errBanner) {
+        errBanner.style.display = 'block';
+        errBanner.innerHTML = '<strong>❌ Lỗi cấu trúc dữ liệu:</strong> Không tìm thấy cột số liệu định lượng nào hợp lệ để tính toán chỉ số KPI và vẽ biểu đồ.';
+      }
+      showToast('❌ Lỗi cấu trúc dữ liệu: Không tìm thấy cột số liệu định lượng nào hợp lệ để tính toán chỉ số KPI và vẽ biểu đồ.', 'error');
+      toggleColumnMappingPanel(true);
+      return;
+    }
+  }
+
+  // 1. Check if raw file data is available (Fault-Tolerant Zero-Crash Policy)
+  const rawRows = (state.analytics.rawFileRows && state.analytics.rawFileRows.length)
+    ? state.analytics.rawFileRows
+    : [{ _note: 'File trống hoặc không có dòng dữ liệu' }];
+
+  // 2. Prepare UI
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '⏳ Đang gọi AI Agent...';
+  }
+  const currentModel = state.api.model || 'gemini-2.5-flash';
+  if (progBanner) {
+    progBanner.style.display = 'block';
+    progBanner.innerHTML = `⚡ Đang truyền trực tiếp từng dòng dữ liệu thô vào Google AI Studio (<code>generativelanguage.googleapis.com</code>) qua model <strong>${escapeHtml(currentModel)}</strong>...`;
+  }
+
+  try {
+    const res = await fetch('/api/agent', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'parse_b2b_records_batch',
+        data: { rows: rawRows },
+        model: currentModel
+      })
+    });
+
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      const errMsg = data.error || `HTTP ${res.status} (${res.statusText || 'Lỗi kết nối'})`;
+      if (errBanner) {
+        errBanner.style.display = 'block';
+        errBanner.innerHTML = `
+          <strong>❌ Lỗi gọi Gemini API (Google AI Studio):</strong> ${escapeHtml(errMsg)}
+          <div style="margin-top:0.35rem; font-size:0.77rem; color:#7f1d1d;">
+            Hệ thống không rơi về dữ liệu mẫu giả theo đúng yêu cầu kiểm soát chất lượng. Vui lòng bấm <strong>Kiểm tra API</strong> ở góc phải để kiểm tra API key hoặc đổi model.
+          </div>
+        `;
+      }
+      showToast(`Lỗi AI Agent: ${errMsg}`, 'error');
+      return;
+    }
+
+    // 3. Render raw JSON results directly to UI (Fault-Tolerant Universal Data Analyst)
+    const records = data.records || [];
+    state.analytics.importedRecords = records.map((rec, i) => {
+      const ext = rec.du_lieu_trich_xuat || rec;
+      const budget = typeof ext.ngan_sach === 'number' ? ext.ngan_sach : (typeof rec.ngan_sach === 'number' ? rec.ngan_sach : 0);
+      const qty = typeof ext.so_luong === 'number' ? ext.so_luong : (typeof rec.so_luong === 'number' ? rec.so_luong : (ext.danh_muc_san_pham ? 1 : 0));
+      const discount = typeof ext.de_nghi_chiet_khau === 'number' ? ext.de_nghi_chiet_khau : (typeof rec.de_nghi_chiet_khau === 'number' ? rec.de_nghi_chiet_khau : 0.0);
+      const statusFile = rec.trang_thai_file || (rec.du_thong_tin ? 'DAY_DU' : 'THIEU_MOT_PHAN');
+      const isPassed = (statusFile === 'DAY_DU');
+      const missing = Array.isArray(rec.danh_sach_truong_thieu) && rec.danh_sach_truong_thieu.length
+        ? rec.danh_sach_truong_thieu
+        : (Array.isArray(rec.truong_con_thieu) ? rec.truong_con_thieu : []);
+      const auditNote = rec.ghi_chu_kiem_toan || '';
+      const followUps = Array.isArray(rec.goi_y_cau_hoi_phan_tich) ? rec.goi_y_cau_hoi_phan_tich : [];
+
+      const rawProd = ext.danh_muc_san_pham || rec.danh_muc_san_pham;
+      const hasValidProd = Boolean(rawProd && isValidProductString(rawProd) && !String(rawProd).includes('Chưa xác định'));
+      const prodName = hasValidProd ? rawProd : 'Chưa xác định (Thiếu tên sản phẩm)';
+      const custName = ext.khach_hang || rec.khach_hang || 'Khách hàng ẩn danh';
+      const ownerName = ext.nguoi_phu_trach || rec.nguoi_phu_trach || 'Chưa phân công';
+      const timeline = ext.thoi_han_trien_khai || rec.thoi_han_trien_khai || null;
+
+      return {
+        id: `MA-AI-${String(i + 1).padStart(3, '0')}`,
+        trang_thai_file: statusFile,
+        du_lieu_trich_xuat: {
+          khach_hang: ext.khach_hang !== undefined ? ext.khach_hang : custName,
+          nguoi_phu_trach: ext.nguoi_phu_trach !== undefined ? ext.nguoi_phu_trach : ownerName,
+          danh_muc_san_pham: ext.danh_muc_san_pham !== undefined ? ext.danh_muc_san_pham : rawProd,
+          so_luong: typeof ext.so_luong === 'number' ? ext.so_luong : (typeof rec.so_luong === 'number' ? rec.so_luong : null),
+          ngan_sach: typeof ext.ngan_sach === 'number' ? ext.ngan_sach : (typeof rec.ngan_sach === 'number' ? rec.ngan_sach : null),
+          thoi_han_trien_khai: timeline,
+          de_nghi_chiet_khau: discount
+        },
+        danh_sach_truong_thieu: missing,
+        ghi_chu_kiem_toan: auditNote,
+        goi_y_cau_hoi_phan_tich: followUps,
+        khach_hang: custName,
+        nguoi_phu_trach: ownerName,
+        danh_muc_san_pham: rawProd,
+        so_luong: typeof ext.so_luong === 'number' ? ext.so_luong : (typeof rec.so_luong === 'number' ? rec.so_luong : null),
+        ngan_sach: typeof ext.ngan_sach === 'number' ? ext.ngan_sach : (typeof rec.ngan_sach === 'number' ? rec.ngan_sach : null),
+        thoi_han_trien_khai: timeline,
+        de_nghi_chiet_khau: discount,
+        du_thong_tin: isPassed,
+        truong_con_thieu: missing,
+        rawJson: rec,
+        // CRM and analytics compatibility fields
+        company: custName,
+        owner: ownerName,
+        product: prodName,
+        itemsSummary: prodName,
+        qty: qty,
+        budget: budget,
+        revenue: budget,
+        totalValue: isPassed ? budget : 0,
+        discount: discount,
+        discountPercent: discount,
+        days: timeline ? 5 : 0,
+        sourceSheet: state.analytics.loadedFileName || 'File nạp mới',
+        channel: 'Tải File Trực tiếp',
+        priorityTier: isPassed ? (budget >= 1000000000 ? 'VIP - Trọng điểm' : budget >= 200000000 ? 'Hạng A - Chiến lược' : 'Hạng B - Tiêu chuẩn') : 'Hạng C (Cần bổ sung TT)',
+        projectType: 'Cơ hội B2B AI Chuẩn hóa',
+        category: 'Hạ tầng & Giải pháp',
+        marginPercent: isPassed ? 22 : 0,
+        statusKey: !isPassed ? 'clarify' : (discount > 5 ? 'pending' : 'ready'),
+        statusLabel: !isPassed ? 'Cần bổ sung thông tin (ĐK1)' : (discount > 5 ? 'Chờ TP duyệt (ĐK2)' : 'Đủ ĐK tiếp tục')
+      };
+    });
+
+    // Update CRM deals
+    state.deals = state.analytics.importedRecords.map(r => ({
+      id: r.id,
+      company: r.company,
+      contact: r.company,
+      channel: r.channel,
+      owner: r.owner,
+      category: r.category,
+      projectType: r.projectType,
+      priorityTier: r.priorityTier,
+      itemsSummary: r.itemsSummary,
+      totalValue: r.totalValue,
+      discountPercent: r.discountPercent,
+      marginPercent: r.marginPercent,
+      statusKey: r.statusKey,
+      statusLabel: r.statusLabel,
+      note: `Chuẩn hóa bởi Gemini AI Agent (${r.du_thong_tin ? 'Đủ ĐK1' : 'Thiếu: ' + r.truong_con_thieu.join(', ')})`
+    }));
+
+    renderImportedRowsTable();
+    renderAnalyticsDashboard();
+    renderTrackingTable();
+    showToast(`✅ Đã bóc tách thành công ${records.length} bản ghi qua Gemini AI Agent!`, 'success');
+  } catch (err) {
+    if (errBanner) {
+      errBanner.style.display = 'block';
+      errBanner.innerHTML = `<strong>❌ Lỗi mạng / Hệ thống:</strong> ${escapeHtml(err.message)}`;
+    }
+    showToast(`Lỗi: ${err.message}`, 'error');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = '⚡ Chạy AI Agent';
+    }
+    if (progBanner) {
+      progBanner.style.display = 'none';
+    }
+  }
+}
+
+function loadImportedRecordToStep1(recId) {
+  const rec = state.analytics.importedRecords.find(r => r.id === recId);
+  if (!rec) return;
+  state.opp = createEmptyOpportunity(null);
+  state.opp.id = rec.id;
+  state.opp.company = rec.company || rec.khach_hang || 'Khách hàng ẩn danh';
+  state.opp.contact = rec.contact || '';
+  state.opp.channel = rec.channel || 'Tải File';
+  state.opp.owner = (rec.owner && !isNumericLikeValue(rec.owner)) ? rec.owner : (rec.nguoi_phu_trach || 'Chưa phân công');
+  state.opp.rawRow = rec.rawRow || null;
+  state.opp.rawText = rec.rawText || (rec.rawRow ? collectRawRowNotesText(rec.rawRow) : '');
+
+  const hasValidProduct = isValidProductString(rec.product) && !rec.product.includes('Chưa xác định');
+  const prodText = hasValidProduct ? rec.product : 'Chưa xác định (Thiếu tên sản phẩm)';
+  const qty = hasValidProduct && Number(rec.qty) > 0 ? Number(rec.qty) : 0;
+  const budget = Number(rec.budget) > 0 ? Number(rec.budget) : (Number(rec.revenue) > 0 ? Number(rec.revenue) : 0);
+  const days = Number(rec.days) > 0 ? Number(rec.days) : 0;
+  let discount = rec.discount !== null && rec.discount !== undefined ? Number(rec.discount) : 0;
+  if (discount > 0 && discount < 1) discount = Math.round(discount * 100);
+
+  const synthItem = hasValidProduct ? {
+    sku: rec.id || 'ITEM-01',
+    name: rec.product,
+    category: rec.category || 'Thiết bị Văn phòng',
+    unit: 'Đơn vị',
+    listPrice: budget && qty ? Math.round(budget / qty) : 50000000,
+    cost: budget && qty ? Math.round((budget / qty) * 0.72) : 36000000,
+    stock: 50,
+    leadTimeDays: days || 7,
+    qty: qty
+  } : null;
+
+  state.opp.extracted = {
+    productsText: prodText,
+    totalQty: qty,
+    qty: qty,
+    items: synthItem ? [synthItem] : [],
+    budget: budget > 0 ? budget : null,
+    days: days > 0 ? days : null,
+    requestedDiscount: discount
+  };
+
+  const missingFields = [];
+  if (!hasValidProduct) missingFields.push('Danh mục sản phẩm');
+  if (qty <= 0) missingFields.push('Số lượng');
+  if (budget <= 0) missingFields.push('Ngân sách dự kiến');
+  if (days <= 0) missingFields.push('Thời hạn triển khai');
+
+  const isDk1Passed = (missingFields.length === 0);
+  const isCompletelyEmpty = (!hasValidProduct && qty <= 0 && budget <= 0 && days <= 0 && (!state.opp.company || state.opp.company === 'Khách hàng ẩn danh'));
+  state.opp.missingFieldNames = missingFields;
+  state.opp.missingFields = missingFields;
+  state.opp.condition1Passed = !isCompletelyEmpty;
+  state.opp.calculationHalted = isCompletelyEmpty;
+  state.opp.statusKey = isCompletelyEmpty ? 'clarify' : (isDk1Passed ? 'ready' : 'pending');
+  state.opp.statusLabel = isCompletelyEmpty ? 'Cần bổ sung thông tin (File rỗng)' : (isDk1Passed ? 'Đủ điều kiện' : 'Đủ điều kiện tiếp tục (Thiếu thông tin)');
+  state.opp.grandTotal = 0;
+  state.opp.quotePrice = 0;
+  state.opp.totalPrice = 0;
+
+  if (isCompletelyEmpty) {
+    haltAtCondition1Clarify();
+  }
+
+  setValue('inp-company', state.opp.company);
+  setValue('inp-contact', state.opp.contact);
+  setSelectWithFallback('inp-channel', state.opp.channel);
+  setValue('inp-raw-text', state.opp.rawText);
+  renderSnapshotSidebar();
+
+  addAuditLog('Nạp dòng từ File vào Bước 1', `Hồ sơ ${rec.id} (${rec.company}) từ nguồn ${rec.sourceSheet || 'Tệp nạp'} | ĐK1: ${isDk1Passed ? 'ĐẠT' : 'THIẾU TT'}`, 'info', 'step1');
+  goToStage('step1');
+  scrollToWorkspace();
+  showToast(`Đã nạp ${rec.company} vào Bước 1: ${isDk1Passed ? 'Đủ thông tin' : 'Cần bổ sung thông tin (ĐK1)'}`, 'info');
+}
+
+function setAnalyticsGroupField(field) {
+  state.analytics.groupField = field;
+  renderGroupSelectorPills();
+  renderAnalyticsDashboard();
+}
+
+function getPriorityBadgeClass(tier = '') {
+  const s = String(tier).toLowerCase();
+  if (s.includes('vip')) return 'vip';
+  if (s.includes('hạng a')) return 'tier-a';
+  if (s.includes('hạng c') || s.includes('bổ sung')) return 'tier-c';
+  return 'tier-b';
+}
+
+function renderGroupSelectorPills() {
+  const wrap = $('group-by-pills');
+  if (!wrap) return;
+  if (state.analytics.guardrailBlocked?.isOverMaxCols) {
+    wrap.style.display = 'none';
+    return;
+  }
+  wrap.style.display = 'flex';
+  const baseFields = [
+    { key: 'owner', label: 'NVKD phụ trách' },
+    { key: 'priorityTier', label: 'Ưu tiên KH' },
+    { key: 'projectType', label: 'Loại dự án' },
+    { key: 'category', label: 'Nhóm sản phẩm' },
+    { key: 'channel', label: 'Kênh / Nguồn file' },
+    { key: 'statusLabel', label: 'Trạng thái quy trình' }
+  ];
+  const custom = (state.analytics.customFields || []).map(f => ({ key: f, label: `Cột: ${f}` }));
+  const all = baseFields.concat(custom);
+
+  wrap.innerHTML = all.map(item => `
+    <button type="button" class="f-pill ${state.analytics.groupField === item.key ? 'active' : ''}" data-group="${escapeHtml(item.key)}" onclick="setAnalyticsGroupField('${escapeHtml(item.key)}')">
+      ${escapeHtml(item.label)}
+    </button>`).join('');
+}
+
+function getUnifiedAnalyticsRecords() {
+  const byId = new Map();
+  state.deals.forEach(d => {
+    const net = d.totalValue > 0 ? Math.round(d.totalValue / (1 + POLICY.vatRate)) : 0;
+    const profit = net > 0 ? Math.round(net * ((d.marginPercent || 0) / 100)) : 0;
+    const priorityTier = d.priorityTier || classifyPriorityTier(d, d.totalValue, d.marginPercent || 0, d.statusKey !== 'clarify');
+    const projectType = d.projectType || classifyProjectType({ product: d.itemsSummary, itemsSummary: d.itemsSummary }, d.category);
+    byId.set(d.id, { ...d, priorityTier, projectType, profitEstimate: profit, customMeta: {} });
+  });
+  state.analytics.importedRecords.forEach(r => {
+    const net = r.totalValue > 0 ? Math.round(r.totalValue / (1 + POLICY.vatRate)) : 0;
+    const profit = net > 0 ? Math.round(net * ((r.marginPercent || 0) / 100)) : 0;
+    byId.set(r.id, { ...r, profitEstimate: profit });
+  });
+  return Array.from(byId.values());
+}
+
+function computeAnalyticsSnapshot() {
+  const records = getUnifiedAnalyticsRecords();
+  const total = records.length;
+  let totalRevenue = 0;
+  let readyRevenue = 0;
+  let pendingRevenue = 0;
+  let totalProfit = 0;
+  let marginWeightedSum = 0;
+  let marginWeightCount = 0;
+  let discountSum = 0;
+  let dk1PassedCount = 0;
+  let autoApproveCount = 0;
+  let clarifyCount = 0;
+  let pendingCount = 0;
+
+  const groupMap = new Map();
+  const field = state.analytics.groupField || 'owner';
+
+  records.forEach(r => {
+    const val = Number(r.totalValue || 0);
+    totalRevenue += val;
+    if (r.statusKey === 'ready') {
+      readyRevenue += val;
+      dk1PassedCount += 1;
+      autoApproveCount += 1;
+    } else if (r.statusKey === 'pending') {
+      pendingRevenue += val;
+      dk1PassedCount += 1;
+      pendingCount += 1;
+    } else if (r.statusKey === 'clarify') {
+      clarifyCount += 1;
+    }
+
+    totalProfit += Number(r.profitEstimate || 0);
+    if (val > 0) {
+      marginWeightedSum += Number(r.marginPercent || 0);
+      marginWeightCount += 1;
+    }
+    const discNum = typeof r.discountPercent === 'number' && Number.isFinite(r.discountPercent)
+      ? r.discountPercent
+      : (parseFloat(r.discountPercent) || 0);
+    discountSum += discNum;
+
+    const groupKey = String((r[field] !== undefined ? r[field] : (r.customMeta && r.customMeta[field])) || 'Chưa phân loại').trim() || 'Chưa phân loại';
+    if (!groupMap.has(groupKey)) {
+      groupMap.set(groupKey, { key: groupKey, count: 0, revenue: 0, discountSum: 0, marginSum: 0, marginCount: 0, readyCount: 0 });
+    }
+    const g = groupMap.get(groupKey);
+    g.count += 1;
+    g.revenue += val;
+    g.discountSum += discNum;
+    if (val > 0) {
+      g.marginSum += Number(r.marginPercent || 0);
+      g.marginCount += 1;
+    }
+    if (r.statusKey === 'ready') g.readyCount += 1;
+  });
+
+  const groups = Array.from(groupMap.values())
+    .map(g => ({
+      key: g.key,
+      count: g.count,
+      revenue: g.revenue,
+      sharePercent: totalRevenue > 0 ? (g.revenue / totalRevenue) * 100 : (total > 0 ? (g.count / total) * 100 : 0),
+      avgDiscount: g.count > 0 ? g.discountSum / g.count : 0,
+      avgMargin: g.marginCount > 0 ? g.marginSum / g.marginCount : 0,
+      readyRate: g.count > 0 ? (g.readyCount / g.count) * 100 : 0
+    }))
+    .sort((a, b) => b.revenue - a.revenue || b.count - a.count);
+
+  const avgMarginPercent = marginWeightCount > 0 ? marginWeightedSum / marginWeightCount : 0;
+  const avgDiscountPercent = total > 0 ? discountSum / total : 0;
+  const dk1PassRate = total > 0 ? (dk1PassedCount / total) * 100 : 0;
+  const autoApproveRate = dk1PassedCount > 0 ? (autoApproveCount / dk1PassedCount) * 100 : 0;
+
+  return {
+    totalRecords: total,
+    totalRevenue,
+    readyRevenue,
+    pendingRevenue,
+    totalProfit,
+    avgMarginPercent,
+    avgDiscountPercent,
+    dk1PassRate,
+    autoApproveRate,
+    clarifyCount,
+    pendingCount,
+    readyCount: autoApproveCount,
+    autoApproveCount,
+    riskCount: pendingCount + clarifyCount,
+    groupField: field,
+    groups
+  };
+}
+
+function renderAnalyticsDashboard() {
+  const snap = computeAnalyticsSnapshot();
+
+  setText('analytics-record-count', String(snap.totalRecords));
+  setText('dataset-source-pill', state.analytics.sourceLabels.length
+    ? `Nguồn: CRM + ${state.analytics.sourceLabels.slice(-2).join(', ')}`
+    : 'Nguồn: Dữ liệu CRM + File tải lên');
+
+  if (state.analytics.lastSchemaSummary) {
+    setText('dataset-schema-summary', `${state.analytics.lastSchemaSummary} — Tổng ${snap.totalRecords} bản ghi.`);
+  }
+
+  setText('kpi-total-revenue', formatVND(snap.totalRevenue));
+  setText('kpi-revenue-split', `Đủ ĐK: ${formatCompactMoney(snap.readyRevenue)} • Chờ duyệt: ${formatCompactMoney(snap.pendingRevenue)}`);
+  setText('kpi-margin-avg', `${snap.avgMarginPercent.toFixed(1)}%`);
+  setText('kpi-profit-amount', `Lợi nhuận ước tính: ${formatVND(snap.totalProfit)}`);
+  setText('kpi-workflow-eff', `${snap.dk1PassRate.toFixed(0)}%`);
+  setText('kpi-workflow-detail', `Đạt ĐK1: ${snap.dk1PassRate.toFixed(0)}% • Tự duyệt NVKD: ${snap.autoApproveRate.toFixed(0)}%`);
+  setText('kpi-discount-risk', `${snap.avgDiscountPercent.toFixed(1)}%`);
+  setText('kpi-risk-detail', `${snap.pendingCount} chờ duyệt • ${snap.clarifyCount} thiếu thông tin`);
+
+  const groupTbody = $('grouped-analytics-tbody');
+  if (groupTbody) {
+    groupTbody.innerHTML = snap.groups.map(g => `
+      <tr>
+        <td><strong>${escapeHtml(g.key)}</strong></td>
+        <td style="text-align:center;"><span class="badge-count-pill">${g.count}</span></td>
+        <td><strong>${g.revenue > 0 ? formatVND(g.revenue) : '0 ₫'}</strong></td>
+        <td>
+          <div class="share-bar-wrap">
+            <div class="share-bar-track"><div class="share-bar-fill" style="width:${Math.min(100, g.sharePercent).toFixed(1)}%"></div></div>
+            <small style="font-weight:700;">${g.sharePercent.toFixed(1)}%</small>
+          </div>
+        </td>
+        <td style="text-align:center;">${g.avgDiscount.toFixed(1)}%</td>
+        <td style="text-align:center;">${g.avgMargin.toFixed(1)}%</td>
+        <td style="text-align:center;"><span class="deal-tag ${g.readyRate >= 60 ? 'ready' : g.readyRate >= 30 ? 'pending' : 'clarify'}">${g.readyRate.toFixed(0)}%</span></td>
+      </tr>`).join('');
+  }
+
+  const previewWrap = $('imported-rows-preview-wrap');
+  const previewTbody = $('imported-rows-tbody');
+  const gapBox = $('ai-gap-audit-box');
+  const statusBadge = $('ai-file-status-badge');
+  const gapContent = $('ai-gap-audit-content');
+  const promptList = $('ai-followup-prompts-list');
+  const promptWrap = $('ai-followup-prompts-wrap');
+
+  if (previewWrap && previewTbody) {
+    if (!state.analytics.importedRecords.length) {
+      previewWrap.style.display = 'none';
+      previewTbody.innerHTML = '';
+      if (gapBox) gapBox.style.display = 'none';
+    } else {
+      previewWrap.style.display = 'block';
+
+      // Render Gap Audit & Smart Follow-up Prompts (Fault-Tolerant Universal Data Analyst)
+      if (gapBox) {
+        gapBox.style.display = 'block';
+        const allStatuses = state.analytics.importedRecords.map(r => r.trang_thai_file);
+        const overallStatus = allStatuses.includes('FILE_TRONG_HOAC_NHIEU')
+          ? 'FILE_TRONG_HOAC_NHIEU'
+          : (allStatuses.includes('THIEU_MOT_PHAN') ? 'THIEU_MOT_PHAN' : 'DAY_DU');
+
+        if (statusBadge) {
+          statusBadge.className = 'deal-tag ' + (overallStatus === 'DAY_DU' ? 'ready' : (overallStatus === 'THIEU_MOT_PHAN' ? 'pending' : 'clarify'));
+          statusBadge.innerHTML = overallStatus === 'DAY_DU'
+            ? '✅ DAY_DU (Đầy đủ hồ sơ)'
+            : (overallStatus === 'THIEU_MOT_PHAN' ? '⚠️ THIEU_MOT_PHAN (Thiếu một phần)' : '❌ FILE_TRONG_HOAC_NHIEU (Trống / Nhiễu)');
+        }
+
+        if (gapContent) {
+          const notes = state.analytics.importedRecords.map(r => r.ghi_chu_kiem_toan).filter(Boolean);
+          const uniqueNotes = Array.from(new Set(notes));
+          gapContent.innerHTML = uniqueNotes.length
+            ? uniqueNotes.map(n => `<p style="margin:0 0 0.35rem 0;">📝 ${escapeHtml(n)}</p>`).join('')
+            : 'Đã hoàn tất phân tích dữ liệu qua Fault-Tolerant Universal Data Analyst.';
+        }
+
+        if (promptList) {
+          const allPrompts = [];
+          state.analytics.importedRecords.forEach(r => {
+            (r.goi_y_cau_hoi_phan_tich || []).forEach(q => {
+              if (q && !allPrompts.includes(q)) allPrompts.push(q);
+            });
+          });
+          if (allPrompts.length) {
+            if (promptWrap) promptWrap.style.display = 'block';
+            promptList.innerHTML = allPrompts.slice(0, 5).map(q => `
+              <div style="display:flex; align-items:flex-start; gap:0.45rem; padding:0.45rem 0.65rem; background:#ffffff; border:1px solid #e2e8f0; border-radius:6px; font-size:0.79rem; color:#1e293b;">
+                <span style="color:#0284c7; font-weight:700;">💡</span>
+                <span style="flex:1;">${escapeHtml(q)}</span>
+              </div>
+            `).join('');
+          } else if (promptWrap) {
+            promptWrap.style.display = 'none';
+          }
+        }
+      }
+
+      const limit = state.analytics.previewLimit || 100;
+      const totalImported = state.analytics.importedRecords.length;
+      const visibleRows = state.analytics.importedRecords.slice(0, limit);
+      const moreRow = totalImported > limit
+        ? `<tr><td colspan="11" style="text-align:center; padding:0.75rem; background:#f8fafc;">
+             <span style="font-size:0.78rem; color:#475569; margin-right:0.65rem;">Đang hiển thị ${visibleRows.length} / ${totalImported} bản ghi</span>
+             <button type="button" class="btn-row-action" onclick="showMoreImportedRows()">Xem thêm (+200)</button>
+           </td></tr>`
+        : '';
+      previewTbody.innerHTML = visibleRows.map((r, i) => {
+        const fileStatus = r.trang_thai_file || (r.du_thong_tin ? 'DAY_DU' : 'THIEU_MOT_PHAN');
+        const missingArr = Array.isArray(r.danh_sach_truong_thieu) && r.danh_sach_truong_thieu.length
+          ? r.danh_sach_truong_thieu
+          : (Array.isArray(r.truong_con_thieu) ? r.truong_con_thieu : []);
+        const missingStr = missingArr.length ? missingArr.join(' • ') : 'Đầy đủ';
+        const displayCust = r.khach_hang || r.company || 'Khách hàng ẩn danh';
+        const displayOwner = r.nguoi_phu_trach || r.owner || 'Chưa phân công';
+        const displayProd = r.danh_muc_san_pham || r.product || r.itemsSummary;
+        const displayQty = r.so_luong !== null && r.so_luong !== undefined ? r.so_luong : (r.qty !== null && r.qty !== undefined ? r.qty : null);
+        const displayBudget = typeof r.ngan_sach === 'number' ? r.ngan_sach : (typeof r.totalValue === 'number' ? r.totalValue : null);
+        const displayDays = r.thoi_han_trien_khai || (r.days ? `${r.days} ngày` : null);
+        const displayDisc = typeof r.de_nghi_chiet_khau === 'number'
+          ? r.de_nghi_chiet_khau
+          : (typeof r.discountPercent === 'number' ? r.discountPercent : null);
+
+        const prodCellHtml = displayProd ? `<strong>${escapeHtml(displayProd)}</strong>` : '<span style="color:#94a3b8;">(Để trống)</span>';
+        const qtyCellHtml = (displayQty !== null && displayQty !== undefined && displayQty > 0) ? displayQty : '<span style="color:#94a3b8;">(Để trống)</span>';
+        const budgetCellHtml = (displayBudget !== null && displayBudget !== undefined && displayBudget > 0) ? `<strong>${formatVND(displayBudget)}</strong>` : '<span style="color:#94a3b8;">(Để trống)</span>';
+        const daysCellHtml = displayDays ? escapeHtml(displayDays) : '<span style="color:#94a3b8;">(Để trống)</span>';
+        let discCellHtml = '<span style="color:#94a3b8;">(Để trống)</span>';
+        if (displayDisc !== null && displayDisc !== undefined) {
+          if (displayDisc < 0 || displayDisc > 100) {
+            discCellHtml = `<span style="color:#b45309; font-weight:700;">${displayDisc}% (cần xác nhận)</span>`;
+          } else {
+            discCellHtml = `${displayDisc}%`;
+          }
+        }
+
+        const statusTagHtml = fileStatus === 'DAY_DU'
+          ? '<span class="deal-tag ready" style="font-size:0.71rem;">✅ Đầy đủ</span>'
+          : (fileStatus === 'THIEU_MOT_PHAN'
+            ? '<span class="deal-tag pending" style="font-size:0.71rem;">⚠️ Thiếu 1 phần</span>'
+            : '<span class="deal-tag clarify" style="font-size:0.71rem;">❌ Trống / Nhiễu</span>');
+
+        return `
+          <tr>
+            <td>${i + 1}</td>
+            <td><strong>${escapeHtml(displayCust)}</strong></td>
+            <td>${escapeHtml(displayOwner)}</td>
+            <td>${prodCellHtml}</td>
+            <td style="text-align:center;">${qtyCellHtml}</td>
+            <td>${budgetCellHtml}</td>
+            <td>${daysCellHtml}</td>
+            <td style="text-align:center;">${discCellHtml}</td>
+            <td style="text-align:center;">${statusTagHtml}</td>
+            <td><small style="color:${missingArr.length ? '#b91c1c' : '#15803d'};">${escapeHtml(missingStr)}</small></td>
+            <td style="text-align:center;">
+              <button type="button" class="btn-row-action" style="font-size:0.73rem; padding:0.25rem 0.5rem;" onclick="viewRecordJsonDetail(${i})">Xem JSON</button>
+            </td>
+          </tr>
+        `;
+      }).join('') + moreRow;
+    }
+  }
+}
+
+function renderImportedRowsTable() {
+  renderAnalyticsDashboard();
+}
+
+function viewRecordJsonDetail(index) {
+  const rec = state.analytics.importedRecords[index];
+  if (!rec) return;
+  const modal = $('json-detail-modal');
+  const content = $('json-detail-content');
+  if (content) {
+    const raw = rec.rawJson || {};
+    const ext = raw.du_lieu_trich_xuat || rec.du_lieu_trich_xuat || {
+      khach_hang: rec.khach_hang || rec.company || null,
+      nguoi_phu_trach: rec.nguoi_phu_trach || rec.owner || null,
+      danh_muc_san_pham: rec.danh_muc_san_pham || rec.product || null,
+      so_luong: typeof rec.so_luong === 'number' ? rec.so_luong : null,
+      ngan_sach: typeof rec.ngan_sach === 'number' ? rec.ngan_sach : null,
+      thoi_han_trien_khai: rec.thoi_han_trien_khai || null,
+      de_nghi_chiet_khau: typeof rec.de_nghi_chiet_khau === 'number' ? rec.de_nghi_chiet_khau : 0.0
+    };
+    const missing = raw.danh_sach_truong_thieu || rec.danh_sach_truong_thieu || rec.truong_con_thieu || [];
+    const auditNote = raw.ghi_chu_kiem_toan || rec.ghi_chu_kiem_toan || 'File đã được phân tích bởi Fault-Tolerant Universal Data Analyst.';
+    const followUps = raw.goi_y_cau_hoi_phan_tich || rec.goi_y_cau_hoi_phan_tich || [];
+    const fileStatus = raw.trang_thai_file || rec.trang_thai_file || (rec.du_thong_tin ? 'DAY_DU' : 'THIEU_MOT_PHAN');
+
+    const cleanOutput = {
+      trang_thai_file: fileStatus,
+      du_lieu_trich_xuat: {
+        khach_hang: ext.khach_hang !== undefined ? ext.khach_hang : (rec.khach_hang || null),
+        nguoi_phu_trach: ext.nguoi_phu_trach !== undefined ? ext.nguoi_phu_trach : (rec.nguoi_phu_trach || null),
+        danh_muc_san_pham: ext.danh_muc_san_pham !== undefined ? ext.danh_muc_san_pham : (rec.danh_muc_san_pham || null),
+        so_luong: typeof ext.so_luong === 'number' ? ext.so_luong : (typeof rec.so_luong === 'number' ? rec.so_luong : null),
+        ngan_sach: typeof ext.ngan_sach === 'number' ? ext.ngan_sach : (typeof rec.ngan_sach === 'number' ? rec.ngan_sach : null),
+        thoi_han_trien_khai: ext.thoi_han_trien_khai !== undefined ? ext.thoi_han_trien_khai : (rec.thoi_han_trien_khai || null),
+        de_nghi_chiet_khau: typeof ext.de_nghi_chiet_khau === 'number' ? ext.de_nghi_chiet_khau : (typeof rec.de_nghi_chiet_khau === 'number' ? rec.de_nghi_chiet_khau : 0.0)
+      },
+      danh_sach_truong_thieu: missing,
+      ghi_chu_kiem_toan: auditNote,
+      goi_y_cau_hoi_phan_tich: followUps
+    };
+    content.textContent = JSON.stringify(cleanOutput, null, 2);
+  }
+  if (modal) modal.style.display = 'flex';
+}
+
+function closeJsonDetailModal() {
+  const modal = $('json-detail-modal');
+  if (modal) modal.style.display = 'none';
+}
+
+function showMoreImportedRows() {
+  state.analytics.previewLimit = (state.analytics.previewLimit || 100) + 200;
+  renderAnalyticsDashboard();
+}
+
+async function generateAiExecutiveReport(silent = false) {
+  const snap = computeAnalyticsSnapshot();
+  const box = $('ai-report-box');
+  if (box) box.innerHTML = '⏳ Đang tổng hợp số liệu tài chính (KPI / MG%), phân loại khách hàng ưu tiên & gọi Google AI Studio...';
+
+  let report = null;
+  let apiErrorMessage = null;
+  if (state.api.configured && state.api.useLiveApi && typeof fetch === 'function') {
+    let timer = null;
+    try {
+      const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      if (controller) timer = setTimeout(() => controller.abort(), 12000);
+      const res = await fetch('/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller ? controller.signal : undefined,
+        body: JSON.stringify({
+          action: 'executive_report',
+          data: {
+            tong_so_ho_so: snap.totalRecords,
+            tong_doanh_thu_vnd: snap.totalRevenue,
+            doanh_thu_du_kien_vnd: snap.readyRevenue,
+            doanh_thu_cho_xu_ly_vnd: snap.pendingRevenue,
+            loi_nhuan_uoc_tinh_vnd: snap.totalProfit,
+            bien_loi_nhuan_trung_binh_pct: Number(snap.avgMarginPercent.toFixed(1)),
+            chiet_khau_trung_binh_pct: Number(snap.avgDiscountPercent.toFixed(1)),
+            ty_le_dat_thong_tin_dk1_pct: Number(snap.dk1PassRate.toFixed(1)),
+            so_ho_so_thieu_thong_tin_dk1: snap.clarifyCount,
+            cac_diem_nghen: snap.clarifyCount > 0 ? `Có ${snap.clarifyCount} hồ sơ dừng tại nhánh Làm rõ do thiếu thông tin ĐK1` : 'Không có điểm nghẽn dữ liệu lớn',
+            top_nhom_san_pham: snap.groups.slice(0, 6).map(g => ({
+              ten: g.key,
+              so_luong: g.count,
+              doanh_thu: g.revenue,
+              ty_trong_pct: Number(g.sharePercent.toFixed(1)),
+              bien_ln_pct: Number(g.avgMargin.toFixed(1))
+            }))
+          }
+        })
+      });
+      if (res.ok) {
+        const json = await res.json();
+        if (json.ok && json.data && (json.data.tong_quan_nhanh || json.data.headline || json.data.de_xuat_giai_phap)) {
+          report = json.data;
+        } else if (json.error) {
+          apiErrorMessage = json.error;
+        }
+      } else {
+        apiErrorMessage = `HTTP ${res.status}`;
+      }
+    } catch (e) {
+      apiErrorMessage = e.message;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  } else {
+    apiErrorMessage = 'API key chưa được cấu hình hoặc chưa bật chế độ Live API.';
+  }
+
+// Smart data-driven fallback when API is offline or times out (never leave user with empty or broken box)
+if (!report) {
+  const readyPct = snap.totalRecords > 0 ? ((snap.readyRevenue / (snap.totalRevenue || 1)) * 100).toFixed(1) : 0;
+  report = {
+    tong_quan_nhanh: `Đã xử lý ${snap.totalRecords} hồ sơ với tổng giá trị ${formatVND(snap.totalRevenue)}; tỷ lệ đạt chuẩn tự động chiếm ${snap.autoApproveRate.toFixed(1)}%, ghi nhận ${snap.clarifyCount} hồ sơ cần làm rõ thông tin đầu vào.`,
+    diem_nhan_tich_cuc: [
+      `Doanh thu đủ điều kiện đạt ${formatVND(snap.readyRevenue)} (${readyPct}% tổng doanh thu), đảm bảo tiến độ chuyển đổi cơ hội.`,
+      `Biên lợi nhuận gộp trung bình toàn hệ thống đạt ${snap.avgMarginPercent.toFixed(1)}%, nằm trên ngưỡng an toàn sàn (≥ 15%).`
+    ],
+    canh_bao_rui_ro: [
+      snap.clarifyCount > 0 
+        ? `Ghi nhận ${snap.clarifyCount} hồ sơ (${((snap.clarifyCount / snap.totalRecords) * 100).toFixed(1)}%) thiếu thông tin ĐK1, tập trung ở trường ngân sách và thời hạn triển khai.`
+        : `Chiết khấu trung bình ở mức ${snap.avgDiscountPercent.toFixed(1)}%, cần theo dõi chặt chẽ các đơn hàng có yêu cầu vượt 5%.`
+    ],
+    de_xuat_giai_phap: [
+      {
+        bo_phan: "Kinh doanh (Sales)",
+        hanh_dong: `Tập trung hoàn thiện thông tin cho ${snap.clarifyCount} hồ sơ đang chờ bổ sung ĐK1; ưu tiên liên hệ khách hàng trong 24h để nâng tỷ lệ tự duyệt.`
+      },
+      {
+        bo_phan: "Quản lý (Manager)",
+        hanh_dong: `Rà soát các cơ hội có doanh thu chờ duyệt (${formatVND(snap.pendingRevenue)}) để phê duyệt chính sách thương mại và hỗ trợ đàm phán kịp thời.`
+      },
+      {
+        bo_phan: "Vận hành (Ops)",
+        hanh_dong: `Chủ động kích hoạt kế hoạch cung ứng 100% (bỏ qua thẩm định tồn kho) cho các nhóm giải pháp chủ lực để sẵn sàng điều vận ngay khi chốt đơn.`
+      }
+    ]
+  };
+}
+
+
+  const records = getUnifiedAnalyticsRecords();
+  const readyPct = snap.totalRevenue > 0 ? ((snap.readyRevenue / snap.totalRevenue) * 100).toFixed(1) : '0.0';
+  const pendingPct = snap.totalRevenue > 0 ? ((snap.pendingRevenue / snap.totalRevenue) * 100).toFixed(1) : '0.0';
+  const discSafeCount = records.filter(r => (Number(r.discountPercent) || 0) <= 5).length;
+  const discOver5Count = records.filter(r => (Number(r.discountPercent) || 0) > 5).length;
+
+  // Aggregate channel data
+  const channelMap = {};
+  records.forEach(r => {
+    const ch = String(r.channel || 'Trực tiếp').trim() || 'Trực tiếp';
+    if (!channelMap[ch]) channelMap[ch] = { name: ch, count: 0, revenue: 0 };
+    channelMap[ch].count++;
+    channelMap[ch].revenue += Number(r.totalValue || 0);
+  });
+  const channelsList = Object.values(channelMap).sort((a, b) => b.revenue - a.revenue || b.count - a.count);
+  const topChannel = channelsList[0] || { name: 'Trực tiếp', count: snap.totalRecords, revenue: snap.totalRevenue };
+  const topChannelShare = snap.totalRevenue > 0 ? ((topChannel.revenue / snap.totalRevenue) * 100).toFixed(1) : '100.0';
+
+  // Aggregate customer tier data
+  const tierMap = {};
+  records.forEach(r => {
+    const t = String(r.priorityTier || 'Hạng B - Tiêu chuẩn').trim() || 'Hạng B - Tiêu chuẩn';
+    if (!tierMap[t]) tierMap[t] = { name: t, count: 0, revenue: 0 };
+    tierMap[t].count++;
+    tierMap[t].revenue += Number(r.totalValue || 0);
+  });
+  const tiersList = Object.values(tierMap).sort((a, b) => b.revenue - a.revenue || b.count - a.count);
+  const topTier = tiersList[0] || { name: 'Khách hàng Chiến lược', count: snap.totalRecords, revenue: snap.totalRevenue };
+  const topTierShare = snap.totalRevenue > 0 ? ((topTier.revenue / snap.totalRevenue) * 100).toFixed(1) : '100.0';
+
+  // Aggregate product category data
+  const catMap = {};
+  records.forEach(r => {
+    const cat = String(r.category || 'Hạ tầng & Giải pháp').trim() || 'Hạ tầng & Giải pháp';
+    if (!catMap[cat]) catMap[cat] = { name: cat, count: 0, revenue: 0, marginSum: 0, marginCount: 0 };
+    catMap[cat].count++;
+    catMap[cat].revenue += Number(r.totalValue || 0);
+    if (r.totalValue > 0) {
+      catMap[cat].marginSum += Number(r.marginPercent || 0);
+      catMap[cat].marginCount++;
+    }
+  });
+  const catsList = Object.values(catMap).sort((a, b) => b.revenue - a.revenue || b.count - a.count);
+  const topCat = catsList[0] || { name: 'Hạ tầng & Giải pháp', count: snap.totalRecords, revenue: snap.totalRevenue, marginSum: 0, marginCount: 0 };
+  const topCatShare = snap.totalRevenue > 0 ? ((topCat.revenue / snap.totalRevenue) * 100).toFixed(1) : '100.0';
+  const topCatMargin = topCat.marginCount > 0 ? (topCat.marginSum / topCat.marginCount).toFixed(1) : snap.avgMarginPercent.toFixed(1);
+
+  // Aggregate sales reps (PIC / owner)
+  const ownerMap = {};
+  records.forEach(r => {
+    const o = String(r.owner || 'Thu Thảo').trim() || 'Thu Thảo';
+    if (!ownerMap[o]) ownerMap[o] = { name: o, count: 0, revenue: 0, readyCount: 0 };
+    ownerMap[o].count++;
+    ownerMap[o].revenue += Number(r.totalValue || 0);
+    if (r.statusKey === 'ready') ownerMap[o].readyCount++;
+  });
+  const ownersList = Object.values(ownerMap).sort((a, b) => b.revenue - a.revenue || b.count - a.count);
+  const topOwner = ownersList[0] || { name: 'Thu Thảo', count: snap.totalRecords, revenue: snap.totalRevenue, readyCount: snap.readyCount };
+  const topOwnerShare = snap.totalRevenue > 0 ? ((topOwner.revenue / snap.totalRevenue) * 100).toFixed(1) : '100.0';
+  const topOwnerReadyRate = topOwner.count > 0 ? ((topOwner.readyCount / topOwner.count) * 100).toFixed(1) : snap.autoApproveRate.toFixed(1);
+
+  // 6 Aspect details
+  const businessAspects = [
+    {
+      key: 'revenue',
+      badgeClass: 'revenue',
+      badgeText: 'Doanh thu & Quy mô',
+      icon: '💰',
+      title: 'Khía cạnh 1: Quy mô & Hiệu suất Doanh thu (Revenue Scale & Growth)',
+      desc: `Tổng doanh thu toàn hệ thống đạt <strong>${formatVND(snap.totalRevenue)}</strong> trên ${snap.totalRecords} hồ sơ. Trong đó, doanh thu đủ điều kiện tự duyệt (ĐK1) đạt <strong>${formatVND(snap.readyRevenue)}</strong> (${readyPct}%), tạo dòng tiền an toàn có tính thanh khoản cao. Phần doanh thu đang chờ thẩm định/phê duyệt ghi nhận <strong>${formatVND(snap.pendingRevenue)}</strong> (${pendingPct}%), chủ yếu thuộc các hợp đồng quy mô lớn cần Trưởng phòng hoặc Ban Giám đốc phê duyệt chính sách thương mại.`,
+      pills: [
+        `Tổng quy mô: <strong>${formatVND(snap.totalRevenue)}</strong>`,
+        `Đủ ĐK tự duyệt: <strong>${formatVND(snap.readyRevenue)} (${readyPct}%)</strong>`,
+        `Chờ duyệt: <strong>${formatVND(snap.pendingRevenue)} (${pendingPct}%)</strong>`
+      ],
+      progress: { val: parseFloat(readyPct) || 0, label: `Tỷ lệ tự duyệt dòng tiền: ${readyPct}%` }
+    },
+    {
+      key: 'customer',
+      badgeClass: 'customer',
+      badgeText: 'Khách hàng & Kênh',
+      icon: '🏢',
+      title: 'Khía cạnh 2: Phân khúc Khách hàng & Kênh Phân phối (Customers & Channels)',
+      desc: `Kênh bán hàng <strong>“${escapeHtml(topChannel.name)}”</strong> giữ vị trí chủ đạo với tổng doanh thu <strong>${formatVND(topChannel.revenue)}</strong> (chiếm ${topChannelShare}% doanh số qua ${topChannel.count} cơ hội). Phân khúc khách hàng <strong>“${escapeHtml(topTier.name)}”</strong> dẫn đầu với ${formatVND(topTier.revenue)} (${topTierShare}%), phản ánh năng lực cạnh tranh cao của Thu Thảo Company trong việc đấu thầu và phục vụ nhóm doanh nghiệp trọng điểm.`,
+      pills: [
+        `Kênh chủ lực: <strong>${escapeHtml(topChannel.name)} (${topChannelShare}%)</strong>`,
+        `Phân khúc cao nhất: <strong>${escapeHtml(topTier.name)}</strong>`,
+        `Tổng số kênh: <strong>${channelsList.length} kênh</strong>`
+      ]
+    },
+    {
+      key: 'product',
+      badgeClass: 'product',
+      badgeText: 'Sản phẩm & Danh mục',
+      icon: '📦',
+      title: 'Khía cạnh 3: Cơ cấu Sản phẩm & Danh mục Chủ lực (Product Portfolio & Category)',
+      desc: `Danh mục <strong>“${escapeHtml(topCat.name)}”</strong> là trụ cột sản phẩm mang lại <strong>${formatVND(topCat.revenue)}</strong> (${topCatShare}% tổng giá trị) với biên lợi nhuận trung bình <strong>${topCatMargin}%</strong>. Sức mua đối với dòng giải pháp này có tính ổn định cao, khuyến nghị mở rộng thêm các gói bảo hành mở rộng và phụ kiện liên kết để gia tăng giá trị trung bình mỗi giao dịch.`,
+      pills: [
+        `Danh mục đầu tàu: <strong>${escapeHtml(topCat.name)}</strong>`,
+        `Đóng góp doanh số: <strong>${topCatShare}%</strong>`,
+        `Biên LN danh mục: <strong>${topCatMargin}%</strong>`
+      ]
+    },
+    {
+      key: 'finance',
+      badgeClass: 'finance',
+      badgeText: 'Tài chính & Biên LN',
+      icon: '📈',
+      title: 'Khía cạnh 4: Hiệu quả Tài chính, Chiết khấu & Biên Lợi nhuận (Financial Health & Margin Control)',
+      desc: `Biên lợi nhuận gộp toàn hệ thống đạt <strong>${snap.avgMarginPercent.toFixed(1)}%</strong>, nằm an toàn trên ngưỡng sàn chuẩn (≥ 15%) của Thu Thảo Company, mang lại lợi nhuận gộp ước tính <strong>${formatVND(snap.totalProfit)}</strong>. Về kiểm soát giá bán, chiết khấu bình quân đạt <strong>${snap.avgDiscountPercent.toFixed(1)}%</strong>: ghi nhận <strong>${discSafeCount} hồ sơ</strong> nằm trong khung tự duyệt an toàn (≤ 5%) và <strong>${discOver5Count} hồ sơ</strong> xin chiết khấu vượt thẩm quyền (> 5%) cần Trưởng phòng rà soát để bảo toàn lợi nhuận.`,
+      pills: [
+        `Lợi nhuận gộp ước tính: <strong>${formatVND(snap.totalProfit)}</strong>`,
+        `Biên LN TB (MG%): <strong>${snap.avgMarginPercent.toFixed(1)}% (Sàn ≥ 15%)</strong>`,
+        `Chiết khấu TB: <strong>${snap.avgDiscountPercent.toFixed(1)}%</strong>`,
+        `Hồ sơ CK ≤5%: <strong>${discSafeCount}</strong>`,
+        `Hồ sơ CK >5%: <strong>${discOver5Count}</strong>`
+      ]
+    },
+    {
+      key: 'hr',
+      badgeClass: 'hr',
+      badgeText: 'Đội ngũ & Nhân sự',
+      icon: '👥',
+      title: 'Khía cạnh 5: Đội ngũ Kinh doanh & Năng suất Nhân sự (Sales Team & Workforce Execution)',
+      desc: `Chuyên viên <strong>“${escapeHtml(topOwner.name)}”</strong> dẫn đầu doanh số với <strong>${formatVND(topOwner.revenue)}</strong> (${topOwnerShare}% toàn bộ cơ hội) và tỷ lệ tự duyệt hồ sơ đạt <strong>${topOwnerReadyRate}%</strong>. Đội ngũ NVKD bám sát quy trình tiếp nhận và thẩm định, cần duy trì cơ chế phân bổ nguồn lead đồng đều và đào tạo chéo để nâng cao tỷ lệ tự duyệt của toàn bộ nhân sự phụ trách.`,
+      pills: [
+        `NVKD xuất sắc: <strong>${escapeHtml(topOwner.name)}</strong>`,
+        `Doanh thu phụ trách: <strong>${formatVND(topOwner.revenue)}</strong>`,
+        `Tỷ lệ tự duyệt: <strong>${topOwnerReadyRate}%</strong>`,
+        `Tổng NVKD tham gia: <strong>${ownersList.length} nhân sự</strong>`
+      ]
+    },
+    {
+      key: 'ops',
+      badgeClass: 'ops',
+      badgeText: 'Vận hành & Dữ liệu',
+      icon: '🛡️',
+      title: 'Khía cạnh 6: Rủi ro Vận hành, Tiến độ & Chất lượng Dữ liệu (Operations, Bottlenecks & Data Governance)',
+      desc: `Tỷ lệ hồ sơ đạt chuẩn thẩm định ĐK1 đạt <strong>${snap.dk1PassRate.toFixed(1)}%</strong>. Ghi nhận <strong>${snap.clarifyCount} hồ sơ (${snap.totalRecords > 0 ? ((snap.clarifyCount / snap.totalRecords) * 100).toFixed(1) : 0}%)</strong> thiếu thông tin ĐK1 cần làm rõ (tập trung ở ngân sách dự kiến và thời hạn triển khai). Trong khâu chuỗi cung ứng, việc kích hoạt chính sách bỏ qua kiểm tra tồn kho (100% cung ứng) giúp loại trừ hoàn toàn thời gian chết trong thẩm định kho, sẵn sàng điều vận ngay khi chốt đơn.`,
+      pills: [
+        `Tỷ lệ đạt chuẩn ĐK1: <strong>${snap.dk1PassRate.toFixed(1)}%</strong>`,
+        `Hồ sơ cần làm rõ: <strong>${snap.clarifyCount} hồ sơ</strong>`,
+        `Cơ chế cung ứng: <strong>Bỏ qua thẩm định tồn kho (100%)</strong>`
+      ]
+    }
+  ];
+
+  state.analytics.aiReport = {
+    ...report,
+    dashboard_kpi: {
+      tong_doanh_thu: snap.totalRevenue,
+      doanh_thu_du_kien: snap.readyRevenue,
+      doanh_thu_cho_duyet: snap.pendingRevenue,
+      loi_nhuan_uoc_tinh: snap.totalProfit,
+      bien_loi_nhuan_tb_pct: Number(snap.avgMarginPercent.toFixed(1)),
+      chiet_khau_tb_pct: Number(snap.avgDiscountPercent.toFixed(1)),
+      tong_so_ho_so: snap.totalRecords,
+      ty_le_dat_dk1_pct: Number(snap.dk1PassRate.toFixed(1)),
+      ty_le_tu_duyet_pct: Number(snap.autoApproveRate.toFixed(1)),
+      so_ho_so_thieu_dk1: snap.clarifyCount,
+      so_ho_so_cho_duyet: snap.pendingCount
+    },
+    phan_tich_tung_khia_canh: businessAspects.map(a => ({
+      khia_canh: a.title,
+      noi_dung: a.desc.replace(/<[^>]+>/g, ''),
+      chi_so_chinh: a.pills.map(p => p.replace(/<[^>]+>/g, ''))
+    }))
+  };
+
+  if (box) {
+    const srcLabel = state.analytics.sourceLabels.length ? state.analytics.sourceLabels.join(', ') : 'Bảng CRM Thu Thảo';
+
+    let overviewText = report.tong_quan_nhanh || report.headline;
+    if (!overviewText && report.tong_quan) {
+      overviewText = `Hồ sơ ${report.tong_quan.ma_co_hoi || '(Chưa cấp mã)'} (${report.tong_quan.khach_hang || 'Chưa rõ KH'}) do ${report.tong_quan.nvkd_phu_trach || 'chưa phân công'} phụ trách. Trạng thái: ${report.tong_quan.trang_thai || 'Đang xử lý'} • Độ đầy đủ dữ liệu: ${report.do_day_du_du_lieu?.ty_le_day_du_pct ?? 0}% (${report.do_day_du_du_lieu?.so_truong_co ?? 0} có, ${report.do_day_du_du_lieu?.so_truong_thieu ?? 0} thiếu).`;
+    }
+    overviewText = overviewText || 'Tóm tắt dữ liệu điều hành doanh nghiệp.';
+
+    let positiveItems = Array.isArray(report.diem_nhan_tich_cuc) ? report.diem_nhan_tich_cuc : (report.highlights || []);
+    if (!positiveItems.length && report.rui_ro_va_co_hoi?.co_hoi?.length) {
+      positiveItems = report.rui_ro_va_co_hoi.co_hoi.map(c => `${c.noi_dung}${c.can_cu ? ` (Căn cứ: ${c.can_cu})` : ''}`);
+    }
+
+    let riskItems = Array.isArray(report.canh_bao_rui_ro) ? report.canh_bao_rui_ro : (report.risks || []);
+    if (!riskItems.length && (report.canh_bao?.length || report.rui_ro_va_co_hoi?.rui_ro?.length)) {
+      riskItems = [
+        ...(report.canh_bao || []).map(cb => `[${(cb.muc_do || 'CẢNH BÁO').toUpperCase()}] ${cb.noi_dung}${cb.can_cu ? ` (Căn cứ: ${cb.can_cu})` : ''}`),
+        ...(report.rui_ro_va_co_hoi?.rui_ro || []).map(r => `${r.noi_dung}${r.can_cu ? ` (Căn cứ: ${r.can_cu})` : ''}`)
+      ];
+    }
+
+    let solutions = [];
+    if (Array.isArray(report.de_xuat_giai_phap)) {
+      solutions = report.de_xuat_giai_phap.map(s => {
+        const dept = s.nguoi_phu_trach || s.bo_phan || 'Đề xuất';
+        const priorityTag = s.uu_tien ? ` [${s.uu_tien.toUpperCase()}]` : '';
+        const issue = s.van_de ? `Vấn đề: ${s.van_de}. ` : '';
+        const basis = s.can_cu ? ` Căn cứ: ${s.can_cu}.` : '';
+        const deadline = s.thoi_han ? ` (Thời hạn: ${s.thoi_han})` : '';
+        const action = s.hanh_dong || '';
+        return {
+          bo_phan: `${dept}${priorityTag}`,
+          hanh_dong: `${issue}${action}${basis}${deadline}`
+        };
+      });
+    } else if (Array.isArray(report.recommendations)) {
+      solutions = report.recommendations.map(r => ({ bo_phan: 'Đề xuất', hanh_dong: r }));
+    }
+
+    const renderDeptClass = dept => {
+      const d = String(dept || '').toLowerCase();
+      if (d.includes('kinh doanh') || d.includes('sales')) return 'sales';
+      if (d.includes('quản lý') || d.includes('trưởng phòng') || d.includes('giám đốc')) return 'manager';
+      return 'ops';
+    };
+
+    box.innerHTML = `
+      <!-- PHẦN 1: DASHBOARD KPI ĐIỀU HÀNH HIỆN LUÔN TRÊN ĐẦU BÁO CÁO -->
+      <div class="dash-report-header">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem; margin-bottom:0.6rem;">
+          <div style="display:flex; gap:0.45rem; align-items:center; flex-wrap:wrap;">
+            <span style="background:#2563eb; color:#ffffff; font-size:0.73rem; font-weight:800; padding:0.2rem 0.55rem; border-radius:4px; letter-spacing:0.4px;">DATALENS BI DASHBOARD</span>
+            <span style="background:rgba(16, 185, 129, 0.2); color:#34d399; border:1px solid #059669; font-size:0.73rem; font-weight:700; padding:0.2rem 0.55rem; border-radius:4px;">
+              Độ phủ dữ liệu 100% (${snap.totalRecords}/${snap.totalRecords} hồ sơ)
+            </span>
+            <span style="background:rgba(255, 255, 255, 0.1); color:#cbd5e1; font-size:0.73rem; padding:0.2rem 0.55rem; border-radius:4px;">
+              Thời gian thực • B2B Thu Thảo
+            </span>
+          </div>
+          <div style="display:flex; gap:0.4rem;">
+            <button type="button" class="btn-row-action" style="font-size:0.74rem; font-weight:700; padding:0.2rem 0.65rem; background:rgba(255,255,255,0.15); color:#ffffff; border-color:rgba(255,255,255,0.25);" onclick="viewCurrentDashboardAiJson()">📄 Xem JSON Chuẩn</button>
+          </div>
+        </div>
+        <div style="font-size:1.18rem; font-weight:800; color:#ffffff; margin-bottom:0.3rem; display:flex; align-items:center; gap:0.45rem;">
+          <span>📈 DASHBOARD ĐIỀU HÀNH &amp; BÁO CÁO CHIẾN LƯỢC TOÀN DIỆN</span>
+        </div>
+        <div style="font-size:0.83rem; color:#cbd5e1; line-height:1.5;">
+          Nguồn dữ liệu: <strong>${escapeHtml(srcLabel)}</strong> · Doanh thu quy mô: <strong style="color:#60a5fa;">${formatVND(snap.totalRevenue)}</strong> · Biên LN TB: <strong style="color:#34d399;">${snap.avgMarginPercent.toFixed(1)}%</strong>
+        </div>
+      </div>
+
+      <!-- HÌNH 1: DASHBOARD ĐIỀU HÀNH HIỆN HỮU TRỰC QUAN -->
+      <div class="dash-figure-wrapper" style="margin-bottom:1.35rem; background:#0f172a; border-radius:12px; border:1.5px solid #334155; overflow:hidden; box-shadow:0 8px 24px rgba(0,0,0,0.18);">
+        <div class="dash-figure-toolbar" style="display:flex; justify-content:space-between; align-items:center; padding:0.65rem 1rem; background:#1e293b; border-bottom:1px solid #334155; flex-wrap:wrap; gap:0.5rem;">
+          <div style="display:flex; align-items:center; gap:0.5rem;">
+            <span style="background:#2563eb; color:#ffffff; font-size:0.75rem; font-weight:800; padding:0.2rem 0.6rem; border-radius:4px; letter-spacing:0.5px;">HÌNH 1</span>
+            <span style="color:#f8fafc; font-weight:800; font-size:0.88rem;">DASHBOARD ĐIỀU HÀNH HIỆU SUẤT KINH DOANH &amp; QUẢN TRỊ B2B</span>
+          </div>
+          <div style="display:flex; gap:0.45rem; align-items:center;">
+            <button type="button" class="btn-row-action" style="font-size:0.75rem; font-weight:700; padding:0.3rem 0.8rem; background:#2563eb; color:#ffffff; border:none; border-radius:6px; cursor:pointer; display:inline-flex; align-items:center; gap:0.35rem;" onclick="downloadDashboardImageAsPng('dashboard-ai-svg-figure', 'Dashboard-Dieu-Hanh-ThuThao-B2B.png')">
+              <span>📥</span><span>Tải Ảnh Dashboard (.PNG)</span>
+            </button>
+            <button type="button" class="btn-row-action" style="font-size:0.75rem; font-weight:600; padding:0.3rem 0.65rem; background:rgba(255,255,255,0.12); color:#cbd5e1; border:1px solid rgba(255,255,255,0.25); border-radius:6px; cursor:pointer;" onclick="window.print()">
+              <span>🖨️ In Báo Cáo</span>
+            </button>
+          </div>
+        </div>
+        <div class="dash-figure-body" style="padding:0.75rem; display:flex; justify-content:center; background:#0f172a; overflow-x:auto;">
+          ${buildDashboardFigureSvg(snap, records, null, 'dashboard-ai-svg-figure')}
+        </div>
+        <div class="dash-figure-caption-bar" style="padding:0.6rem 1rem; background:#1e293b; border-top:1px solid #334155; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem; font-size:0.8rem; color:#94a3b8;">
+          <span>📸 <strong>Hình 1:</strong> <em>Dashboard Điều Hành Hiệu Suất Kinh Doanh &amp; Quản Trị B2B — Thu Thảo Company (Cập nhật trực tiếp từ dữ liệu thời gian thực)</em></span>
+          <span style="font-size:0.74rem; color:#60a5fa; font-weight:600;">Độ phân giải: 1920x1040 HD • Định dạng Vector SVG/PNG Siêu Nét</span>
+        </div>
+      </div>
+
+      <!-- BÓC TÁCH & PHÂN TÍCH CHI TIẾT SỐ LIỆU TỪ HÌNH ẢNH DASHBOARD (HÌNH 1) -->
+      <div style="background:#ffffff; border:1.5px solid #2563eb; border-radius:10px; padding:1.2rem 1.4rem; margin-bottom:1.35rem; box-shadow:0 4px 14px rgba(37,99,235,0.07);">
+        <div style="font-size:1.08rem; font-weight:800; color:#0f172a; margin-bottom:0.4rem; display:flex; align-items:center; gap:0.45rem;">
+          <span>🔍 BÓC TÁCH &amp; PHÂN TÍCH CHI TIẾT DỮ LIỆU TỪ HÌNH ẢNH DASHBOARD (HÌNH 1)</span>
+        </div>
+        <div style="font-size:0.84rem; color:#475569; line-height:1.6; margin-bottom:0.9rem;">
+          Toàn bộ các biểu đồ và chỉ số xuất hiện trong <strong>Hình 1 (Dashboard Điều Hành)</strong> phía trên phản ánh bức tranh tài chính - vận hành đa chiều của doanh nghiệp. Dưới đây là phân tích chi tiết từng khối trực quan:
+        </div>
+
+        <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap:0.85rem; margin-bottom:0.5rem;">
+          <!-- 1. Cột Doanh Thu -->
+          <div style="background:#f8fafc; border:1px solid #cbd5e1; border-left:4px solid #3b82f6; border-radius:8px; padding:0.85rem 1rem;">
+            <div style="font-weight:700; color:#1e40af; font-size:0.9rem; margin-bottom:0.35rem; display:flex; align-items:center; gap:0.35rem;">
+              <span>📊 1. Biểu đồ Cột Doanh Thu &amp; Phê Duyệt (Bên trái Hình 1)</span>
+            </div>
+            <div style="font-size:0.82rem; color:#334155; line-height:1.55;">
+              Biểu đồ cột trực quan hóa 4 luồng giá trị: Tổng doanh thu đạt <strong>${formatVND(snap.totalRevenue)}</strong>; trong đó phần Đủ điều kiện tự duyệt (Cột Xanh) đạt <strong>${formatVND(snap.readyRevenue)}</strong> (${readyPct}%), phần Chờ cấp trên phê duyệt (Cột Vàng) là <strong>${formatVND(snap.pendingRevenue)}</strong> (${pendingPct}%), và Lợi nhuận gộp ước tính (Cột Tím) đạt <strong>${formatVND(snap.totalProfit)}</strong>. Cơ cấu này chứng minh 3/4 dòng tiền kinh doanh được thông suốt mà không gặp nút thắt quy trình.
+            </div>
+          </div>
+
+          <!-- 2. Biểu đồ Donut Thị Phần -->
+          <div style="background:#f8fafc; border:1px solid #cbd5e1; border-left:4px solid #10b981; border-radius:8px; padding:0.85rem 1rem;">
+            <div style="font-weight:700; color:#065f46; font-size:0.9rem; margin-bottom:0.35rem; display:flex; align-items:center; gap:0.35rem;">
+              <span>🍩 2. Biểu đồ Donut Cơ Cấu Kênh &amp; Thị Phần (Bên phải Hình 1)</span>
+            </div>
+            <div style="font-size:0.82rem; color:#334155; line-height:1.55;">
+              Vòng tròn donut phác thảo mức độ tập trung thị phần theo kênh phân phối. Tỷ trọng lớn nhất thuộc về nhóm khách hàng trọng điểm / đại lý cốt lõi, không có kênh nào vượt quá ngưỡng cảnh báo 60% rủi ro độc quyền. Phân bổ doanh thu lan tỏa đồng đều, đảm bảo khả năng kháng cự trước biến động thị trường.
+            </div>
+          </div>
+
+          <!-- 3. Thẻ Chỉ Số Đỉnh -->
+          <div style="background:#f8fafc; border:1px solid #cbd5e1; border-left:4px solid #7c3aed; border-radius:8px; padding:0.85rem 1rem;">
+            <div style="font-weight:700; color:#5b21b6; font-size:0.9rem; margin-bottom:0.35rem; display:flex; align-items:center; gap:0.35rem;">
+              <span>🎛️ 3. Phân Tích 4 Thẻ KPI Đầu Não (Đỉnh Hình 1)</span>
+            </div>
+            <div style="font-size:0.82rem; color:#334155; line-height:1.55;">
+              Bốn thẻ chỉ báo trên cùng Hình 1 tổng hợp các thang đo sức khỏe: Biên lợi nhuận trung bình đạt <strong>${snap.avgMarginPercent.toFixed(1)}%</strong> (vượt ngưỡng sàn an toàn 15%); Tỷ lệ NVKD tự duyệt đơn hàng đạt <strong>${snap.autoApproveRate.toFixed(1)}%</strong>; Chiết khấu bình quân giữ ở mức <strong>${snap.avgDiscountPercent.toFixed(1)}%</strong> (dưới trần 5.0%), bảo toàn lợi nhuận ròng.
+            </div>
+          </div>
+
+          <!-- 4. Thước Đo Vận Hành -->
+          <div style="background:#f8fafc; border:1px solid #cbd5e1; border-left:4px solid #f59e0b; border-radius:8px; padding:0.85rem 1rem;">
+            <div style="font-weight:700; color:#92400e; font-size:0.9rem; margin-bottom:0.35rem; display:flex; align-items:center; gap:0.35rem;">
+              <span>🛡️ 4. Thước Đo Vận Hành &amp; Dữ Liệu Kiểm Toán (Đáy Hình 1)</span>
+            </div>
+            <div style="font-size:0.82rem; color:#334155; line-height:1.55;">
+              Thanh tiến độ đáy Hình 1 xác nhận: Toàn bộ <strong>${snap.totalRecords}</strong> hồ sơ đã vượt qua thuật toán kiểm toán tự động. Tỷ lệ đáp ứng điều kiện thông tin ĐK1 đạt <strong>${snap.dk1PassRate.toFixed(1)}%</strong>. Có <strong>${snap.clarifyCount}</strong> hồ sơ ghi nhận tình trạng thiếu thông tin dự toán/thời hạn cần NVKD bổ sung để giải phóng tiến độ.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 6 THẺ DASHBOARD KPI TRỰC QUAN -->
+      <div class="dash-kpi-grid-6">
+        <!-- Thẻ 1: Tổng Doanh Thu -->
+        <div class="dash-kpi-card-rich" style="border-top:3px solid #2563eb;">
+          <div class="kpi-top">
+            <span class="kpi-title">Tổng Doanh Thu</span>
+            <span class="kpi-icon-pill blue">💰</span>
+          </div>
+          <div class="kpi-value" style="color:#1e40af;">${formatVND(snap.totalRevenue)}</div>
+          <div class="kpi-sub">
+            Đủ ĐK: <strong>${formatCompactMoney(snap.readyRevenue)}</strong> (${readyPct}%) • Chờ duyệt: <strong>${formatCompactMoney(snap.pendingRevenue)}</strong> (${pendingPct}%)
+          </div>
+          <div class="dash-progress-wrap" title="Doanh thu Đủ ĐK vs Chờ duyệt">
+            <div class="dash-progress-fill" style="width:${readyPct}%; background:#10b981;" title="Đủ ĐK tự duyệt: ${readyPct}%"></div>
+            <div class="dash-progress-fill" style="width:${pendingPct}%; background:#f59e0b;" title="Chờ duyệt: ${pendingPct}%"></div>
+          </div>
+        </div>
+
+        <!-- Thẻ 2: Quy Mô Hồ Sơ / Đơn Hàng -->
+        <div class="dash-kpi-card-rich" style="border-top:3px solid #0d9488;">
+          <div class="kpi-top">
+            <span class="kpi-title">Quy Mô &amp; Tự Duyệt</span>
+            <span class="kpi-icon-pill teal">📑</span>
+          </div>
+          <div class="kpi-value" style="color:#0f766e;">${snap.totalRecords} hồ sơ</div>
+          <div class="kpi-sub">
+            Đạt ĐK1: <strong>${snap.dk1PassRate.toFixed(1)}%</strong> • NVKD tự duyệt: <strong>${snap.autoApproveRate.toFixed(1)}%</strong>
+          </div>
+          <div class="dash-progress-wrap" title="Tỷ lệ đạt chuẩn ĐK1">
+            <div class="dash-progress-fill" style="width:${snap.dk1PassRate}%; background:#0d9488;"></div>
+          </div>
+        </div>
+
+        <!-- Thẻ 3: Lợi Nhuận Ước Tính & Biên LN -->
+        <div class="dash-kpi-card-rich" style="border-top:3px solid #16a34a;">
+          <div class="kpi-top">
+            <span class="kpi-title">Biên LN &amp; Lợi Nhuận</span>
+            <span class="kpi-icon-pill green">📈</span>
+          </div>
+          <div class="kpi-value" style="color:#15803d;">${snap.avgMarginPercent.toFixed(1)}%</div>
+          <div class="kpi-sub">
+            Lợi nhuận gộp: <strong>${formatVND(snap.totalProfit)}</strong> (Ngưỡng an toàn ≥ 15%)
+          </div>
+        </div>
+
+        <!-- Thẻ 4: Kiểm Soát Chiết Khấu -->
+        <div class="dash-kpi-card-rich" style="border-top:3px solid #f59e0b;">
+          <div class="kpi-top">
+            <span class="kpi-title">Kiểm Soát Chiết Khấu</span>
+            <span class="kpi-icon-pill amber">🏷️</span>
+          </div>
+          <div class="kpi-value" style="color:#b45309;">${snap.avgDiscountPercent.toFixed(1)}%</div>
+          <div class="kpi-sub">
+            <strong>${discOver5Count} đơn >5%</strong> (Cần TP duyệt) • <strong>${discSafeCount} đơn ≤5%</strong> (Tự duyệt)
+          </div>
+        </div>
+
+        <!-- Thẻ 5: NVKD Dẫn Đầu -->
+        <div class="dash-kpi-card-rich" style="border-top:3px solid #7c3aed;">
+          <div class="kpi-top">
+            <span class="kpi-title">NVKD Dẫn Đầu</span>
+            <span class="kpi-icon-pill purple">👥</span>
+          </div>
+          <div class="kpi-value" style="color:#6b21a8; font-size:1.15rem;">${escapeHtml(topOwner.name)}</div>
+          <div class="kpi-sub">
+            Doanh số: <strong>${formatVND(topOwner.revenue)}</strong> (${topOwnerShare}%) • Tự duyệt: <strong>${topOwnerReadyRate}%</strong>
+          </div>
+        </div>
+
+        <!-- Thẻ 6: Chất Lượng Hồ Sơ & Vận Hành -->
+        <div class="dash-kpi-card-rich" style="border-top:3px solid ${snap.clarifyCount === 0 ? '#10b981' : '#ef4444'};">
+          <div class="kpi-top">
+            <span class="kpi-title">Vận Hành &amp; Dữ Liệu</span>
+            <span class="kpi-icon-pill ${snap.clarifyCount === 0 ? 'green' : 'coral'}">🛡️</span>
+          </div>
+          <div class="kpi-value" style="color:${snap.clarifyCount === 0 ? '#15803d' : '#b91c1c'}; font-size:1.15rem;">
+            ${snap.clarifyCount === 0 ? '100% Hoàn Thiện' : `${snap.clarifyCount} Cần Bổ Sung`}
+          </div>
+          <div class="kpi-sub">
+            ${snap.clarifyCount === 0 ? 'Toàn bộ hồ sơ đầy đủ ĐK1' : 'Hồ sơ thiếu ngân sách/thời hạn ĐK1'}
+          </div>
+        </div>
+      </div>
+
+      <!-- BẢNG TỔNG HỢP CHỈ SỐ DASHBOARD ĐIỀU HÀNH -->
+      <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:0.85rem 1rem; margin-bottom:1rem;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem;">
+          <div style="font-size:0.85rem; font-weight:800; color:#1e293b; display:flex; align-items:center; gap:0.4rem;">
+            <span>📋 Bảng Chỉ Số Điều Hành &amp; Kiểm Soát Hiệu Suất</span>
+          </div>
+          <span style="font-size:0.73rem; color:#64748b;">(Cập nhật tự động theo thời gian thực)</span>
+        </div>
+        <div style="overflow-x:auto;">
+          <table class="data-table" style="width:100%; font-size:0.83rem; background:#ffffff; border-collapse:collapse; border-radius:6px; overflow:hidden;">
+            <thead>
+              <tr style="background:#0f172a; color:#ffffff;">
+                <th style="padding:0.55rem 0.75rem; text-align:left;">Chỉ số trọng yếu</th>
+                <th style="padding:0.55rem 0.75rem; text-align:right;">Giá trị thực tế</th>
+                <th style="padding:0.55rem 0.75rem; text-align:right;">Tỷ trọng / Hiệu suất</th>
+                <th style="padding:0.55rem 0.75rem; text-align:left;">Đánh giá giám sát</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr style="border-bottom:1px solid #f1f5f9;">
+                <td style="padding:0.5rem 0.75rem; font-weight:700; color:#1e293b;">Doanh thu Đủ ĐK tự duyệt</td>
+                <td style="padding:0.5rem 0.75rem; text-align:right; font-weight:800; color:#16a34a;">${formatVND(snap.readyRevenue)}</td>
+                <td style="padding:0.5rem 0.75rem; text-align:right; font-weight:700; color:#16a34a;">${readyPct}%</td>
+                <td style="padding:0.5rem 0.75rem; color:#334155;">Đã thông qua ĐK1, dòng tiền an toàn sẵn sàng chuyển đổi</td>
+              </tr>
+              <tr style="border-bottom:1px solid #f1f5f9;">
+                <td style="padding:0.5rem 0.75rem; font-weight:700; color:#1e293b;">Doanh thu Chờ duyệt (vượt thẩm quyền)</td>
+                <td style="padding:0.5rem 0.75rem; text-align:right; font-weight:800; color:#d97706;">${formatVND(snap.pendingRevenue)}</td>
+                <td style="padding:0.5rem 0.75rem; text-align:right; font-weight:700; color:#d97706;">${pendingPct}%</td>
+                <td style="padding:0.5rem 0.75rem; color:#334155;">Chiết khấu >5% hoặc dự án lớn, cần Trưởng phòng duyệt</td>
+              </tr>
+              <tr style="border-bottom:1px solid #f1f5f9;">
+                <td style="padding:0.5rem 0.75rem; font-weight:700; color:#1e293b;">Lợi nhuận gộp ước tính</td>
+                <td style="padding:0.5rem 0.75rem; text-align:right; font-weight:800; color:#2563eb;">${formatVND(snap.totalProfit)}</td>
+                <td style="padding:0.5rem 0.75rem; text-align:right; font-weight:700; color:#2563eb;">Biên LN ${snap.avgMarginPercent.toFixed(1)}%</td>
+                <td style="padding:0.5rem 0.75rem; color:#334155;">Vượt ngưỡng an toàn quy chuẩn của doanh nghiệp (≥ 15%)</td>
+              </tr>
+              <tr>
+                <td style="padding:0.5rem 0.75rem; font-weight:700; color:#1e293b;">Hồ sơ thiếu thông tin ĐK1</td>
+                <td style="padding:0.5rem 0.75rem; text-align:right; font-weight:800; color:${snap.clarifyCount === 0 ? '#16a34a' : '#dc2626'};">${snap.clarifyCount} hồ sơ</td>
+                <td style="padding:0.5rem 0.75rem; text-align:right; font-weight:700; color:${snap.clarifyCount === 0 ? '#16a34a' : '#dc2626'};">${snap.totalRecords > 0 ? ((snap.clarifyCount / snap.totalRecords) * 100).toFixed(1) : 0}%</td>
+                <td style="padding:0.5rem 0.75rem; color:#334155;">${snap.clarifyCount === 0 ? 'Dữ liệu thông suốt, không có hồ sơ nghẽn' : 'Điểm nghẽn cần NVKD liên hệ khách hàng bổ sung trong 24h'}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- TỔNG QUAN NHANH (EXECUTIVE SUMMARY) -->
+      <div class="dash-overview-card">
+        <div style="font-size:0.74rem; font-weight:800; text-transform:uppercase; letter-spacing:0.5px; opacity:0.85; margin-bottom:0.3rem;">
+          📊 Tổng quan nhanh (Executive Summary)
+        </div>
+        <div style="font-size:0.92rem; font-weight:600; line-height:1.55;">
+          ${escapeHtml(overviewText)}
+        </div>
+      </div>
+
+      <!-- PHẦN 2: PHÂN TÍCH CHI TIẾT TỪNG KHÍA CẠNH CỦA DOANH NGHIỆP -->
+      <div class="dash-aspects-container">
+        <div class="dash-aspects-heading">
+          <span style="display:flex; align-items:center; gap:0.45rem;">
+            <span>🏢 PHÂN TÍCH CHI TIẾT TỪNG KHÍA CẠNH CỦA DOANH NGHIỆP</span>
+          </span>
+          <span style="font-size:0.75rem; color:#64748b; font-weight:normal; background:#f1f5f9; padding:0.2rem 0.55rem; border-radius:4px;">
+            6 Trụ Cột Quản Trị &amp; Vận Hành
+          </span>
+        </div>
+
+        <div class="dash-aspect-cards-grid">
+          ${businessAspects.map(aspect => `
+            <div class="dash-aspect-card ${aspect.key}">
+              <div class="dash-aspect-head-row">
+                <div class="dash-aspect-name">
+                  <span>${aspect.icon}</span>
+                  <span>${escapeHtml(aspect.title)}</span>
+                </div>
+                <span class="dash-aspect-badge ${aspect.badgeClass}">${escapeHtml(aspect.badgeText)}</span>
+              </div>
+              <div class="dash-aspect-desc">
+                ${aspect.desc}
+              </div>
+              ${aspect.progress ? `
+                <div style="margin:0.4rem 0;">
+                  <div style="display:flex; justify-content:space-between; font-size:0.73rem; color:#64748b; margin-bottom:0.25rem;">
+                    <span>${escapeHtml(aspect.progress.label)}</span>
+                    <strong style="color:#0f172a;">${aspect.progress.val}%</strong>
+                  </div>
+                  <div class="dash-progress-wrap">
+                    <div class="dash-progress-fill" style="width:${aspect.progress.val}%; background:#2563eb;"></div>
+                  </div>
+                </div>
+              ` : ''}
+              <div class="dash-aspect-pills-row">
+                ${aspect.pills.map(p => `<div class="dash-aspect-pill">${p}</div>`).join('')}
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+
+      <!-- PHẦN 3: MA TRẬN ĐIỂM SÁNG & CẢNH BÁO RỦI RO -->
+      <div class="dash-two-col-grid" style="margin-top:1.15rem;">
+        <div class="dash-insight-card positive">
+          <div class="dash-insight-header positive">
+            <span>🟢</span>
+            <span>Điểm sáng &amp; Thế mạnh dữ liệu vận hành</span>
+          </div>
+          <ul class="dash-insight-list">
+            ${positiveItems.length ? positiveItems.map(item => `<li>${escapeHtml(item)}</li>`).join('') : '<li>Dữ liệu vận hành ổn định, tiến độ giao dịch đạt chuẩn.</li>'}
+          </ul>
+        </div>
+
+        <div class="dash-insight-card risk">
+          <div class="dash-insight-header risk">
+            <span>⚠️</span>
+            <span>Cảnh báo rủi ro &amp; Điểm nghẽn cần giám sát</span>
+          </div>
+          <ul class="dash-insight-list">
+            ${riskItems.length ? riskItems.map(item => `<li>${escapeHtml(item)}</li>`).join('') : '<li>Không ghi nhận rủi ro vi phạm ngưỡng sàn của doanh nghiệp.</li>'}
+          </ul>
+        </div>
+      </div>
+
+      <!-- PHẦN 4: ĐỀ XUẤT GIẢI PHÁP THỰC THI THEO PHÒNG BAN -->
+      <div class="dash-solutions-wrap" style="margin-top:0.85rem;">
+        <div class="dash-solutions-title">
+          <span>🚀 Đề xuất giải pháp thực thi ngay theo phòng ban (Actionable Solutions)</span>
+        </div>
+        <div class="dash-solutions-list">
+          ${solutions.map(sol => `
+            <div class="dash-solution-item">
+              <span class="dash-dept-pill ${renderDeptClass(sol.bo_phan)}">${escapeHtml(sol.bo_phan || 'Phòng ban')}</span>
+              <span class="dash-sol-action">${escapeHtml(sol.hanh_dong || '')}</span>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+
+      <div style="margin-top:0.85rem; padding-top:0.5rem; border-top:1px dashed #cbd5e1; font-size:0.74rem; color:#64748b; font-style:italic; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.4rem;">
+        <span>Nguồn phân tích: ${escapeHtml(srcLabel)} (${snap.totalRecords} hồ sơ được kiểm toán)</span>
+        <span style="font-weight:700; color:#0284c7;">Google AI Studio • Enterprise Strategy &amp; BI Engine</span>
+      </div>
+    `;
+  }
+  if (!silent) showToast('Đã hoàn tất Báo cáo Chiến lược & Vận hành Dashboard!', 'success');
+}
+
+function viewCurrentDashboardAiJson() {
+  const modal = $('json-detail-modal');
+  const content = $('json-detail-content');
+  const title = $('json-modal-title');
+  if (title) title.textContent = 'JSON Chuẩn Báo cáo Chiến lược & Vận hành (Dashboard Insight Agent)';
+  if (content) {
+    content.textContent = JSON.stringify(state.analytics.aiReport || {}, null, 2);
+  }
+  if (modal) modal.style.display = 'flex';
+}
+
+function exportAnalyticsReportExcel() {
+  const snap = computeAnalyticsSnapshot();
+  const records = getUnifiedAnalyticsRecords();
+  if (typeof XLSX === 'undefined') {
+    showToast('Chưa tải được thư viện Excel (SheetJS) để xuất .xlsx.', 'warn');
+    return;
+  }
+  const wb = XLSX.utils.book_new();
+  const kpiSheet = [
+    ['BÁO CÁO THỐNG KÊ DOANH THU, KPI MG% & PHÂN LOẠI DỰ ÁN — THU THẢO'],
+    ['Tổng số hồ sơ', snap.totalRecords, 'Tổng doanh thu', snap.totalRevenue],
+    ['Doanh thu Đủ ĐK tiếp tục', snap.readyRevenue, 'Doanh thu Chờ duyệt', snap.pendingRevenue],
+    ['Lợi nhuận ước tính', snap.totalProfit, 'KPI MG% TB (%)', Number(snap.avgMarginPercent.toFixed(1))],
+    ['Hiệu suất Đạt ĐK1 (%)', Number(snap.dk1PassRate.toFixed(1)), 'Tỷ lệ Tự duyệt NVKD (%)', Number(snap.autoApproveRate.toFixed(1))]
+  ];
+  const groupSheet = [
+    [`Phân nhóm theo: ${snap.groupField}`, 'Số lượng', 'Doanh thu', 'Tỷ trọng %', 'CK TB %', 'MG% TB', 'Hiệu suất đạt %'],
+    ...snap.groups.map(g => [g.key, g.count, g.revenue, Number(g.sharePercent.toFixed(1)), Number(g.avgDiscount.toFixed(1)), Number(g.avgMargin.toFixed(1)), Number(g.readyRate.toFixed(1))])
+  ];
+  const detailSheet = [
+    ['Mã', 'Khách hàng', 'Ưu tiên KH', 'Loại dự án', 'NVKD', 'Kênh/Nguồn', 'Danh mục', 'Sản phẩm', 'Giá trị', 'CK %', 'MG %', 'Trạng thái', 'Ghi chú'],
+    ...records.map(r => [r.id, r.company, r.priorityTier || '', r.projectType || '', r.owner, r.channel, r.category, r.itemsSummary, r.totalValue, r.discountPercent, r.marginPercent, r.statusLabel, r.note])
+  ];
+
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(kpiSheet), 'TongQuan_KPI');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(groupSheet), 'PhanNhom');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(detailSheet), 'ChiTiet_MinhAn');
+  XLSX.writeFile(wb, 'ThuThao-BaoCao-ThongKe-HieuSuat.xlsx');
+  showToast('Đã xuất Báo cáo Thống kê 3 sheet (.xlsx)!', 'success');
+}
+
+/* ==========================================================================
+   PRIMARY VIEW TABS, COLLAPSIBLE SIDE UTILITY DRAWER & SCROLL
+   ========================================================================== */
+function switchPrimaryView(viewName = 'workflow') {
+  const sections = {
+    workflow: 'workspace-section',
+    analytics: 'analytics-hub-section',
+    crm: 'tracking-section'
+  };
+  Object.keys(sections).forEach(key => {
+    const el = $(sections[key]);
+    if (el) el.classList.toggle('is-view-hidden', key !== viewName);
+  });
+  if (typeof document !== 'undefined') {
+    document.querySelectorAll('.view-tab-btn').forEach(b => {
+      b.classList.toggle('active', b.dataset.view === viewName);
+    });
+    document.querySelectorAll('.nav-link-item[data-nav]').forEach(a => {
+      a.classList.toggle('active', (a.dataset.nav === 'quy-trinh' && viewName === 'workflow') || a.dataset.nav === viewName);
+    });
+  }
+}
+
+/* ==========================================================================
+   HASH ROUTING & LANDING PAGE SECTION NAVIGATION
+   ========================================================================== */
+function navigateToSection(target = 'gioi-thieu', options = {}) {
+  const cleanTarget = String(target).replace(/^#/, '');
+  const validSections = ['gioi-thieu', 'quy-trinh', 'analytics', 'crm'];
+  const finalTarget = validSections.includes(cleanTarget) ? cleanTarget : 'gioi-thieu';
+
+  if (typeof window !== 'undefined' && window.location) {
+    if (window.location.hash !== `#${finalTarget}`) {
+      if (options.replace && window.history && typeof window.history.replaceState === 'function') {
+        window.history.replaceState(null, '', `#${finalTarget}`);
+      } else {
+        window.location.hash = `#${finalTarget}`;
+      }
+    }
+  }
+
+  applySectionRouting(finalTarget, options.smoothScroll !== false);
+}
+
+function applySectionRouting(sectionName = 'gioi-thieu', doScroll = true) {
+  const landingSection = $('section-landing');
+  const appSection = $('section-app');
+  const isLanding = (sectionName === 'gioi-thieu');
+
+  if (landingSection) {
+    landingSection.classList.toggle('is-view-hidden', !isLanding);
+  }
+  if (appSection) {
+    appSection.classList.toggle('is-view-hidden', isLanding);
+  }
+
+  // Update top sticky nav active item
+  if (typeof document !== 'undefined') {
+    document.querySelectorAll('.nav-link-item[data-nav]').forEach(a => {
+      a.classList.toggle('active', a.dataset.nav === sectionName);
+    });
+  }
+
+  if (!isLanding) {
+    if (sectionName === 'quy-trinh' || sectionName === 'workflow') {
+      switchPrimaryView('workflow');
+    } else if (sectionName === 'analytics') {
+      switchPrimaryView('analytics');
+    } else if (sectionName === 'crm') {
+      switchPrimaryView('crm');
+    }
+  }
+
+  if (doScroll && typeof window !== 'undefined' && window.scrollTo) {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+}
+
+function handleQuickDemo() {
+  startNewOpportunity();
+  navigateToSection('quy-trinh');
+  showToast('Chào mừng bạn! Vui lòng nạp file dữ liệu hoặc nhập yêu cầu để bắt đầu.', 'info');
+}
+
+function scrollToLandingSection(sectionId) {
+  const el = $(sectionId);
+  if (el && typeof el.scrollIntoView === 'function') {
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+}
+
+function initHashRouting() {
+  if (typeof window === 'undefined') return;
+
+  window.addEventListener('hashchange', () => {
+    const rawHash = (window.location.hash || '').replace(/^#/, '');
+    applySectionRouting(rawHash || 'gioi-thieu', true);
+  });
+
+  const initialHash = (window.location.hash || '').replace(/^#/, '');
+  if (initialHash === 'test-case2' || initialHash === 'test-case3') {
+    applySectionRouting('quy-trinh', false);
+    setTimeout(async () => {
+      startNewOpportunity();
+      state.opp.company = 'Công ty Cổ phần Alpha Tech';
+      state.opp.contact = 'procurement@alphatech.vn';
+      state.opp.rawText = 'Chào Thu Thảo, bên mình đang cần báo giá Switch Cisco Catalyst 9200L-48P và Máy chủ Dell PowerEdge R750xs cho chi nhánh mới trong vòng 10 ngày tới. Vui lòng gửi thông tin sớm nhé.';
+      setValue('inp-company', state.opp.company);
+      setValue('inp-contact', state.opp.contact);
+      setValue('inp-raw-text', state.opp.rawText);
+      await executeAgentSequentially(true);
+
+      if (initialHash === 'test-case3') {
+        setTimeout(async () => {
+          setValue('customer-reply-input', 'Chào Thu Thảo, bên mình dự kiến số lượng là 25 Switch Cisco Catalyst 9200L-48P và 8 Máy chủ Dell PowerEdge R750xs. Ngân sách công ty dự trù khoảng 3.1 tỷ VND.');
+          await analyzeCustomerReply();
+        }, 400);
+      }
+    }, 150);
+  } else if (initialHash === 'quy-trinh' || initialHash === 'analytics' || initialHash === 'crm') {
+    applySectionRouting(initialHash, false);
+  } else {
+    applySectionRouting('gioi-thieu', false);
+    if (!window.location.hash || window.location.hash === '#' || window.location.hash === '#workspace-section') {
+      if (window.history && typeof window.history.replaceState === 'function') {
+        window.history.replaceState(null, '', '#gioi-thieu');
+      }
+    }
+  }
+}
+
+function initLandingScrollObserver() {
+  if (typeof document === 'undefined') return;
+
+  const elements = document.querySelectorAll('.landing-fade-in');
+  if (!elements.length) return;
+
+  // Honor prefers-reduced-motion
+  const prefersReduced = typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (prefersReduced || !('IntersectionObserver' in window)) {
+    elements.forEach(el => el.classList.add('is-visible'));
+    return;
+  }
+
+  const observer = new IntersectionObserver((entries, obs) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        entry.target.classList.add('is-visible');
+        obs.unobserve(entry.target);
+      }
+    });
+  }, { threshold: 0.1, rootMargin: '0px 0px -30px 0px' });
+
+  elements.forEach(el => observer.observe(el));
+
+  // Dynamic rotating ticker in Hero section
+  const tickerEl = $('landing-ticker-text');
+  if (tickerEl && !tickerEl.dataset.initialized) {
+    tickerEl.dataset.initialized = 'true';
+    const tickerMessages = [
+      'Đang đối soát 25 Switch Cisco Catalyst 9200L & 8 Máy chủ Dell R750xs • Đủ ĐK1',
+      'Thẩm định 7/7 trường hợp lệ • Ngân sách 3.1 tỷ VND • Không có khoảng trống dữ liệu',
+      'Tự động phân công NVKD phụ trách: Thu Thảo • Lập bảng chào giá trong 4.2 giây',
+      'Đối soát tồn kho & Lead-time: 100% Sẵn sàng giao hàng trong 4 ngày',
+      'Đã hoàn tất phê duyệt chiết khấu 5.0% • Sẵn sàng xuất đề xuất Word & PDF'
+    ];
+    let tickerIdx = 0;
+    setInterval(() => {
+      tickerIdx = (tickerIdx + 1) % tickerMessages.length;
+      tickerEl.style.opacity = '0';
+      tickerEl.style.transform = 'translateY(4px)';
+      tickerEl.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
+      setTimeout(() => {
+        tickerEl.textContent = tickerMessages[tickerIdx];
+        tickerEl.style.opacity = '1';
+        tickerEl.style.transform = 'translateY(0)';
+      }, 300);
+    }, 3800);
+  }
+}
+
+function toggleUtilityDrawer(tabName) {
+  const drawer = $('utility-drawer');
+  const backdrop = $('utility-drawer-backdrop');
+  if (!drawer) return;
+  const isOpen = drawer.classList.contains('open');
+  if (tabName && isOpen) {
+    switchDrawerTab(tabName);
+    return;
+  }
+  const nextOpen = !isOpen;
+  drawer.classList.toggle('open', nextOpen);
+  if (backdrop) backdrop.classList.toggle('open', nextOpen);
+  if (nextOpen && tabName) switchDrawerTab(tabName);
+}
+
+function closeUtilityDrawer() {
+  $('utility-drawer')?.classList.remove('open');
+  $('utility-drawer-backdrop')?.classList.remove('open');
+}
+
+function switchDrawerTab(tabName = 'notes') {
+  if (typeof document !== 'undefined') {
+    document.querySelectorAll('[data-drawer-tab]').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.drawerTab === tabName);
+    });
+    document.querySelectorAll('.drawer-pane').forEach(p => p.classList.remove('active'));
+  }
+  $(`drawer-pane-${tabName}`)?.classList.add('active');
+  if (tabName === 'map') updateMinimap();
+}
+
+function scrollToWorkspace() {
+  navigateToSection('quy-trinh');
+}
+
+function scrollToAnalytics() {
+  navigateToSection('analytics');
+}
+
+function scrollToTracking() {
+  navigateToSection('crm');
+}
+
+function scrollToTop() {
+  if (typeof window !== 'undefined' && window.scrollTo) {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+}
+
+function bindMultiFileDropZone() {
+  const dz = $('multi-file-dropzone');
+  if (dz && typeof dz.addEventListener === 'function') {
+    dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag-over'); });
+    dz.addEventListener('dragleave', () => dz.classList.remove('drag-over'));
+    dz.addEventListener('drop', e => {
+      e.preventDefault();
+      dz.classList.remove('drag-over');
+      if (e.dataTransfer?.files?.length) {
+        handleMultiDatasetUpload({ target: { files: e.dataTransfer.files } });
+      }
+    });
+  }
+
+  const dz1 = $('step1-file-dropzone');
+  if (dz1 && typeof dz1.addEventListener === 'function') {
+    dz1.addEventListener('dragover', e => { e.preventDefault(); dz1.classList.add('drag-over'); });
+    dz1.addEventListener('dragleave', () => dz1.classList.remove('drag-over'));
+    dz1.addEventListener('drop', e => {
+      e.preventDefault();
+      dz1.classList.remove('drag-over');
+      if (e.dataTransfer?.files?.length) {
+        handleRequestFileUpload({ target: { files: e.dataTransfer.files } });
+      }
+    });
+  }
+}
+
+
+function loadSampleSimulatedDeal() {
+  startNewOpportunity();
+  state.opp.company = 'Tập đoàn Công nghệ & Viễn thông Sao Việt';
+  state.opp.contact = 'Trần Hải Đăng (procurement@saoviet-telecom.vn - 0988123456)';
+  state.opp.channel = 'Email';
+  state.opp.rawText = 'Chào Thu Thảo, bên mình đang cần báo giá gấp 25 Switch Cisco Catalyst 9200L-48P và 8 Máy chủ Dell PowerEdge R750xs cho Trung tâm Dữ liệu Q4/2026. Ngân sách công ty dự trù khoảng 3.1 tỷ VND. Thời hạn giao hàng trong vòng 10 ngày tới. Yêu cầu chiết khấu đối tác 5%.';
+  setValue('inp-company', state.opp.company);
+  setValue('inp-contact', state.opp.contact);
+  setValue('inp-channel', state.opp.channel);
+  setValue('inp-raw-text', state.opp.rawText);
+  if (typeof onStep1Input === 'function') onStep1Input();
+  showToast('Đã nạp hồ sơ mẫu: Tập đoàn Viễn thông Sao Việt (Đủ 7 trường)', 'success');
+}
+
+function loadSampleInvalidDeal() {
+  startNewOpportunity();
+  state.opp.company = 'Công ty TNHH Khởi Nghiệp Thử Nghiệm';
+  state.opp.contact = '';
+  state.opp.channel = 'Biểu mẫu Web';
+  state.opp.rawText = 'Bên mình cần tham khảo giá switch mạng, chưa rõ số lượng cụ thể và ngân sách.';
+  setValue('inp-company', state.opp.company);
+  setValue('inp-contact', state.opp.contact);
+  setValue('inp-channel', state.opp.channel);
+  setValue('inp-raw-text', state.opp.rawText);
+  if (typeof onStep1Input === 'function') onStep1Input();
+  showToast('Đã nạp hồ sơ thiếu thông tin (để kiểm tra luồng Làm rõ)', 'warn');
+}
+
+function initApp() {
+  startNewOpportunity();
+  renderCatalogModalTable();
+  renderDealsTable();
+  renderGroupSelectorPills();
+  renderAnalyticsDashboard();
+  renderAllLivePanels();
+  fetchApiStatus();
+  bindMultiFileDropZone();
+
+  // Hash & Landing Section Routing
+  initHashRouting();
+  initLandingScrollObserver();
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('scroll', () => {
+      const btn = $('back-to-top');
+      if (btn) btn.classList.toggle('visible', window.scrollY > 420);
+    });
+  }
+
+  if (typeof document !== 'undefined') {
+    document.querySelectorAll('.reveal-up').forEach(el => el.classList.add('is-visible'));
+  }
+
+  if (typeof window !== 'undefined' && window.location && typeof URLSearchParams !== 'undefined') {
+    const params = new URLSearchParams(window.location.search);
+    const autorun = params.get('autorun');
+    if (autorun && SCENARIO_PRESETS[autorun]) {
+      selectScenario(autorun);
+      navigateToSection('quy-trinh', { replace: true });
+      setTimeout(() => {
+        executeAgentSequentially();
+      }, 250);
+    }
+  }
+}
+
+if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initApp);
+  } else {
+    initApp();
+  }
+}

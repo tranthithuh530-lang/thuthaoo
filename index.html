@@ -1,0 +1,1612 @@
+<!DOCTYPE html>
+<html lang="vi">
+
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Thu Thảo Company — Quy trình Xử lý Cơ hội Bán hàng B2B</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@500;700&family=Playfair+Display:ital,wght@0,600;0,700;0,800;0,900;1,600&display=swap"
+    rel="stylesheet">
+  <link rel="stylesheet" href="styles.css?v=20261118_thuthao_v102_fixed_modal">
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@500;700&family=Playfair+Display:ital,wght@0,600;0,700;0,800;0,900;1,600&display=swap"
+    rel="stylesheet">
+  <link rel="stylesheet" href="styles.css?v=20261119_datalens_kpi_dashboard_v108">
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="docx.umd.js"></script>
+  <script>if (typeof window.docx === "undefined") { document.write('<script src="https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.js"><\/script>'); }</script>
+</head>
+
+<body>
+
+  <!-- ========================================================================
+       STICKY TOP HEADER NAVIGATION BAR
+       ======================================================================== -->
+  <header class="site-header-sticky" id="site-header">
+    <nav class="wingly-nav">
+      <a class="wingly-logo" href="#gioi-thieu" onclick="navigateToSection('gioi-thieu'); return false;"
+        aria-label="Trang chủ Thu Thảo">
+        <svg class="logo-m-icon" viewBox="0 0 44 36" fill="none">
+          <path d="M4 30L14 6L22 24L30 6L40 30" stroke="#def74f" stroke-width="5.5" stroke-linecap="round"
+            stroke-linejoin="round" />
+        </svg>
+        <span class="logo-brand-text">THU THẢO <span class="logo-sub-tag">B2B Agent</span></span>
+      </a>
+
+      <div class="nav-center-links">
+        <a class="nav-link-item active" data-nav="gioi-thieu" href="#gioi-thieu"
+          onclick="navigateToSection('gioi-thieu'); return false;">Giới thiệu</a>
+        <a class="nav-link-item" data-nav="quy-trinh" href="#quy-trinh"
+          onclick="navigateToSection('quy-trinh'); return false;">Quy trình B2B Thu Thảo</a>
+        <a class="nav-link-item" data-nav="analytics" href="#analytics"
+          onclick="navigateToSection('analytics'); return false;">Đọc File &amp; Thống kê</a>
+        <a class="nav-link-item" data-nav="crm" href="#crm" onclick="navigateToSection('crm'); return false;">Danh sách
+          CRM</a>
+      </div>
+
+      <div style="display:flex; gap:0.5rem; align-items:center;">
+        <button type="button" class="btn-api-status" id="btn-api-status" onclick="openApiModal()">
+          <span class="api-dot" id="api-status-dot"></span>
+          <span id="api-status-badge">Đã kết nối Gemini</span>
+        </button>
+        <button class="btn-nav-outline" type="button" onclick="toggleUtilityDrawer()">Công cụ &amp; Ghi chú</button>
+      </div>
+    </nav>
+  </header>
+
+  <!-- ========================================================================
+       SECTION 1: TRANG GIỚI THIỆU (LANDING PAGE)
+       ======================================================================== -->
+  <section id="section-landing" class="section-landing">
+    <!-- 1. HERO -->
+    <div class="landing-hero-wrap">
+      <div class="landing-aurora-glow" aria-hidden="true"></div>
+      <div class="landing-container landing-hero-grid">
+        <div class="landing-hero-content landing-fade-in">
+          <div class="landing-badge-tag">
+            <span class="landing-badge-spark">✦</span> B2B SALES AUTOMATION AGENT
+          </div>
+          <h1 class="landing-serif-title">Xử lý cơ hội &amp; báo giá B2B trong vài phút</h1>
+          <p class="landing-hero-subtitle">
+            Tự động bóc tách yêu cầu khách hàng, kiểm tra tính đầy đủ, đối soát giá và tồn kho, phân luồng phê duyệt
+            thông minh.
+          </p>
+          <div class="landing-hero-actions">
+            <button type="button" class="btn-landing-primary" onclick="navigateToSection('quy-trinh')">
+              Bắt đầu xử lý →
+            </button>
+            <button type="button" class="btn-landing-demo" onclick="handleQuickDemo()">
+              Chạy thử ngay ⚡
+            </button>
+            <button type="button" class="btn-landing-secondary" onclick="scrollToLandingSection('landing-steps')">
+              Xem cách hoạt động ↓
+            </button>
+          </div>
+          <div class="landing-hero-meta">
+            <span>✓ Quy trình Xử lý Cơ hội B2B Thu Thảo</span>
+            <span>✓ Bóc tách 7 trường &amp; Kiểm toán Gap Audit</span>
+            <span>✓ Đã kết nối Gemini</span>
+          </div>
+
+          <!-- LIVE AI PROCESSING STREAM TICKER -->
+          <div class="landing-live-stream-ticker">
+            <span class="ticker-pulse-orb"></span>
+            <span class="ticker-label">AI Agent Stream:</span>
+            <span class="ticker-text" id="landing-ticker-text">Đang đối soát 25 Switch Cisco Catalyst 9200L &amp; 8 Máy chủ Dell R750xs • Đủ ĐK1</span>
+          </div>
+        </div>
+
+        <!-- RIGHT HERO PREVIEW CARD -->
+        <div class="landing-hero-visual landing-fade-in">
+          <div class="landing-mock-card">
+            <div class="mock-card-glow"></div>
+            <div class="mock-card-head">
+              <div>
+                <span class="mock-opp-id">OPP-2026-6213</span>
+                <span class="vip-badge-glow" style="margin-left: 0.4rem;">VIP Platinum</span>
+              </div>
+              <span class="exec-status-pill approved">ĐÃ BÁO GIÁ</span>
+            </div>
+            <h3 class="mock-company-name">Tập đoàn Viễn thông &amp; Công nghệ Sao Việt</h3>
+            <p class="mock-card-desc">Triển khai hạ tầng Trung tâm Dữ liệu Q4/2026</p>
+
+            <div class="mock-items-list">
+              <div class="mock-item-row">
+                <span class="mock-item-name">Switch Cisco Catalyst 9200L-48P</span>
+                <span class="mock-item-qty">x 25</span>
+              </div>
+              <div class="mock-item-row">
+                <span class="mock-item-name">Máy chủ Dell PowerEdge R750xs</span>
+                <span class="mock-item-qty">x 8</span>
+              </div>
+            </div>
+
+            <div class="mock-metrics-row">
+              <div class="mock-metric-pill">
+                <small>Báo giá</small>
+                <strong>3.016.250.000 đ</strong>
+              </div>
+              <div class="mock-metric-pill">
+                <small>Chiết khấu</small>
+                <strong>5.0% (Đạt ĐK2)</strong>
+              </div>
+              <div class="mock-metric-pill">
+                <small>Kho / Lead-time</small>
+                <strong>100% / 4 ngày</strong>
+              </div>
+            </div>
+
+            <!-- Mini 6-step progress indicator -->
+            <div class="mock-rail-steps">
+              <div class="mock-step done" title="Bước 1: Tiếp nhận"><span>1</span> Tiếp nhận ✓</div>
+              <div class="mock-step done" title="Bước 2: Kiểm tra ĐK1"><span>2</span> ĐK1 ✓</div>
+              <div class="mock-step done" title="Bước 3: Tạo hồ sơ"><span>3</span> Hồ sơ ✓</div>
+              <div class="mock-step done" title="Bước 4: Thẩm định giá"><span>4</span> Giá ✓</div>
+              <div class="mock-step done" title="Bước 5: Báo giá ĐK2"><span>5</span> ĐK2 ✓</div>
+              <div class="mock-step done active" title="Bước 6: Hoàn tất"><span>6</span> Hoàn tất</div>
+            </div>
+
+            <div class="mock-card-footer">
+              <button type="button" class="btn-mock-action" onclick="handleQuickDemo()">
+                Nạp hồ sơ mẫu này &amp; Chạy thử ngay →
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 2. VẤN ĐỀ → GIẢI PHÁP -->
+    <div class="landing-section-wrap landing-vs-section">
+      <div class="landing-container">
+        <div class="landing-section-header landing-fade-in">
+          <span class="landing-section-kicker">SO SÁNH HIỆU QUẢ</span>
+          <h2 class="landing-serif-title">Từ quy trình thủ công đến vận hành tự chủ</h2>
+          <p class="landing-section-lead">Giải phóng đội ngũ kinh doanh B2B khỏi các tác vụ đối soát lặp đi lặp lại.</p>
+        </div>
+
+        <div class="landing-vs-grid">
+          <!-- Cột Trước -->
+          <div class="landing-vs-card vs-before landing-fade-in">
+            <div class="vs-card-badge red">Quy trình thủ công trước đây</div>
+            <ul class="vs-list">
+              <li>
+                <span class="vs-icon red">✕</span>
+                <div>
+                  <strong>Đọc email thủ công:</strong> Dễ sót hạng mục, nhầm lẫn số lượng và model thiết bị.
+                </div>
+              </li>
+              <li>
+                <span class="vs-icon red">✕</span>
+                <div>
+                  <strong>Đối chiếu giá &amp; kho tốn thời gian:</strong> Tra cứu bảng giá nhiều sheet và tồn kho mất
+                  hàng giờ.
+                </div>
+              </li>
+              <li>
+                <span class="vs-icon red">✕</span>
+                <div>
+                  <strong>Phân luồng duyệt chậm:</strong> Quy trình trình ký thủ công kéo dài, trễ hạn gửi báo giá.
+                </div>
+              </li>
+            </ul>
+          </div>
+
+          <!-- Cột Với Thu Thảo -->
+          <div class="landing-vs-card vs-after landing-fade-in">
+            <div class="vs-card-badge lime">Với Thu Thảo B2B AI Agent</div>
+            <ul class="vs-list">
+              <li>
+                <span class="vs-icon lime">✓</span>
+                <div>
+                  <strong>Tự bóc tách đủ hạng mục:</strong> Trích xuất 100% dòng sản phẩm, model và quy đổi tiền tệ
+                  chuẩn xác.
+                </div>
+              </li>
+              <li>
+                <span class="vs-icon lime">✓</span>
+                <div>
+                  <strong>Tự động chuyển bước:</strong> Kiểm tra ĐK1 và ĐK2, tự tra cứu bảng giá, tồn kho và tiến độ tức
+                  thì.
+                </div>
+              </li>
+              <li>
+                <span class="vs-icon lime">✓</span>
+                <div>
+                  <strong>Chỉ dừng khi cần người quyết định:</strong> Tự động hoàn tất khi đủ điều kiện, chỉ rẽ nhánh
+                  khi vượt trần.
+                </div>
+              </li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3. QUY TRÌNH B2B THU THẢO -->
+    <div class="landing-section-wrap landing-steps-section" id="landing-steps">
+      <div class="landing-container">
+        <div class="landing-section-header landing-fade-in">
+          <span class="landing-section-kicker">KIẾN TRÚC VẬN HÀNH</span>
+          <h2 class="landing-serif-title">QUY TRÌNH XỬ LÝ CƠ HỘI BÁN HÀNG B2B - THU THẢO COMPANY</h2>
+          <p class="landing-section-lead">Chu trình khép kín theo đúng sơ đồ chuẩn hóa Thu Thảo Company từ tiếp nhận
+            thông tin ban đầu đến xuất báo cáo &amp; theo dõi.</p>
+        </div>
+
+        <div class="landing-steps-rail landing-fade-in">
+          <div class="landing-step-card">
+            <div class="step-card-num">01</div>
+            <h4 class="step-card-title">Tiếp nhận yêu cầu</h4>
+            <p class="step-card-desc">Thu thập yêu cầu từ email, biểu mẫu web hoặc file nạp vào hệ thống.</p>
+          </div>
+          <div class="landing-step-card">
+            <div class="step-card-num">02</div>
+            <h4 class="step-card-title">Phân loại &amp; Kiểm tra</h4>
+            <p class="step-card-desc">Bóc tách 7 trường cốt lõi và kiểm tra tính đầy đủ thông tin.</p>
+          </div>
+          <div class="landing-step-card">
+            <div class="step-card-num">03</div>
+            <h4 class="step-card-title">Tạo Hồ sơ Cơ hội</h4>
+            <p class="step-card-desc">Cấp mã cơ hội, phân loại dự án và gán người phụ trách.</p>
+          </div>
+          <div class="landing-step-card">
+            <div class="step-card-num">04</div>
+            <h4 class="step-card-title">Lập Báo giá &amp; Dự thảo</h4>
+            <p class="step-card-desc">Áp đơn giá, tính chiết khấu, VAT và dự thảo đề xuất gửi khách.</p>
+          </div>
+          <div class="landing-step-card">
+            <div class="step-card-num">05</div>
+            <h4 class="step-card-title">Cập nhật &amp; Theo dõi</h4>
+            <p class="step-card-desc">Lưu CRM, xuất email hoàn tất và đưa vào hệ thống theo dõi.</p>
+          </div>
+        </div>
+
+        <div class="landing-steps-note landing-fade-in">
+          <span>💡</span>
+          <em>Ghi chú: Nhánh <strong>"Yêu cầu KH làm rõ / bổ sung"</strong> tự động kích hoạt khi thiếu thông tin, sau
+            đó quay lại Bước 1 Tiếp nhận yêu cầu.</em>
+        </div>
+      </div>
+    </div>
+
+    <!-- 4. ĐẦU RA -->
+    <div class="landing-section-wrap landing-outputs-section">
+      <div class="landing-container">
+        <div class="landing-section-header landing-fade-in">
+          <span class="landing-section-kicker">KẾT QUẢ ĐẦU RA</span>
+          <h2 class="landing-serif-title">Những gì bạn nhận được cuối quy trình</h2>
+          <p class="landing-section-lead">Bộ tài liệu và dữ liệu phân tích đầy đủ, sẵn sàng gửi khách hàng và lưu trữ
+            CRM.</p>
+        </div>
+
+        <div class="landing-outputs-grid">
+          <div class="landing-output-card landing-fade-in">
+            <div class="output-card-icon">📊</div>
+            <h3 class="output-card-title">Báo cáo dashboard 1 trang</h3>
+            <p class="output-card-desc">
+              Trực quan hóa doanh thu, tồn kho, tiến độ và 7 chỉ số KPI điều hành trên 1 màn hình với nhận định chiến
+              lược súc tích.
+            </p>
+          </div>
+
+          <div class="landing-output-card landing-fade-in">
+            <div class="output-card-icon">📑</div>
+            <h3 class="output-card-title">File báo giá (Excel / PDF)</h3>
+            <p class="output-card-desc">
+              Tự động kết xuất bảng tính chiết khấu chi tiết định dạng Excel (.xlsx) và báo cáo tóm tắt điều hành 1
+              trang định dạng PDF.
+            </p>
+          </div>
+
+          <div class="landing-output-card landing-fade-in">
+            <div class="output-card-icon">⏱</div>
+            <h3 class="output-card-title">Nhật ký xử lý từng bước</h3>
+            <p class="output-card-desc">
+              Audit trail minh bạch ghi nhận toàn bộ căn cứ thẩm định, mốc thời gian chuyển bước và lịch sử phê duyệt
+              phân quyền.
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 5. CHỈ SỐ NỔI BẬT -->
+    <div class="landing-section-wrap landing-metrics-section">
+      <div class="landing-container">
+        <div class="landing-section-header landing-fade-in">
+          <span class="landing-section-kicker">CHỈ SỐ THỰC TẾ</span>
+          <h2 class="landing-serif-title">Năng lực vận hành chuẩn chính sách</h2>
+          <p class="landing-section-lead">Các chỉ số cốt lõi được cấu hình trực tiếp trên hệ thống kinh doanh Thu Thảo.
+          </p>
+        </div>
+
+        <div class="landing-metrics-grid landing-fade-in">
+          <div class="landing-metric-card">
+            <div class="metric-num-highlight">6</div>
+            <div class="metric-label">NVKD Phụ Trách</div>
+            <div class="metric-sub">Đội ngũ bán hàng &amp; điều phối liên phòng ban</div>
+          </div>
+          <div class="landing-metric-card">
+            <div class="metric-num-highlight">180+</div>
+            <div class="metric-label">Yêu Cầu / Tuần</div>
+            <div class="metric-sub">Năng lực xử lý đa kênh qua email và tệp dữ liệu</div>
+          </div>
+          <div class="landing-metric-card">
+            <div class="metric-num-highlight">24h</div>
+            <div class="metric-label">SLA Duyệt Tối Đa</div>
+            <div class="metric-sub">Cam kết thời gian phản hồi cho mọi cơ hội bán hàng</div>
+          </div>
+          <div class="landing-metric-card">
+            <div class="metric-num-highlight">≤ 5%</div>
+            <div class="metric-label">Chiết Khấu Tự Duyệt</div>
+            <div class="metric-sub">Hạn mức chiết khấu trong thẩm quyền NVKD</div>
+          </div>
+          <div class="landing-metric-card">
+            <div class="metric-num-highlight">≥ 15%</div>
+            <div class="metric-label">Biên Lợi Nhuận Mục Tiêu</div>
+            <div class="metric-sub">Bảo toàn hiệu quả tài chính chuẩn chính sách thương mại</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 6. KÊU GỌI HÀNH ĐỘNG CUỐI TRANG (Khung xanh olive) -->
+    <div class="landing-section-wrap landing-cta-section">
+      <div class="landing-container">
+        <div class="landing-cta-banner landing-fade-in">
+          <div class="cta-banner-content">
+            <span class="cta-kicker">BẮT ĐẦU NGAY HÔM NAY</span>
+            <h2 class="landing-cta-title">Sẵn sàng tối ưu tốc độ báo giá B2B của bạn?</h2>
+            <p class="landing-cta-subtitle">
+              Trải nghiệm quy trình tự động bóc tách, thẩm định điều kiện và kết xuất báo cáo điều hành ngay tức thì.
+            </p>
+            <div class="cta-banner-actions">
+              <button type="button" class="btn-landing-primary btn-cta-large" onclick="navigateToSection('quy-trinh')">
+                Bắt đầu xử lý →
+              </button>
+              <button type="button" class="btn-landing-demo btn-cta-large" onclick="handleQuickDemo()">
+                Chạy thử hồ sơ mẫu ⚡
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 7. CHÂN TRANG GỌN -->
+    <footer class="landing-footer">
+      <div class="landing-container footer-content-row">
+        <div class="footer-brand-side">
+          <span class="footer-logo-text">THU THẢO <span class="logo-sub-tag">B2B Agent</span></span>
+          <p class="footer-copyright">© 2026 Thu Thảo Company — B2B AI Sales Agent. Bảo lưu mọi quyền.</p>
+        </div>
+        <div class="footer-status-side">
+          <span class="footer-status-tag">
+            <span class="api-dot live" style="background:#22c55e;"></span>
+            Đã kết nối Gemini
+          </span>
+        </div>
+      </div>
+    </footer>
+  </section>
+
+  <!-- ========================================================================
+       SECTION 2: KHỐI QUY TRÌNH THU THẢO & CÁC TAB ỨNG DỤNG
+       ======================================================================== -->
+  <section id="section-app" class="section-app is-view-hidden">
+    <div class="hero-canvas hero-compact" id="hero-top">
+      <div class="hero-aurora-glow" aria-hidden="true"></div>
+      <div class="hero-stage-container hero-stage-compact">
+        <h1 class="hero-headline-title">QUY TRÌNH XỬ LÝ CƠ HỘI BÁN HÀNG B2B - THU THẢO COMPANY</h1>
+        <p class="hero-subtitle-tag">Thu Thảo Company • Kiểm soát ĐK1 &amp; Dự thảo Đề xuất • Bỏ qua kiểm tra tồn kho •
+          Tự động hóa CRM</p>
+      </div>
+    </div>
+
+    <!-- MAIN SHELL (VIEW TABS + WORKFLOW / ANALYTICS / CRM) -->
+    <div class="app-view-tabs-wrap">
+      <div class="app-view-tabs" role="tablist">
+        <button type="button" class="view-tab-btn active" data-view="workflow"
+          onclick="switchPrimaryView('workflow')">Quy trình B2B Thu Thảo</button>
+        <button type="button" class="view-tab-btn" data-view="analytics" onclick="switchPrimaryView('analytics')">Đọc
+          File &amp; Thống kê</button>
+        <button type="button" class="view-tab-btn" data-view="crm" onclick="switchPrimaryView('crm')">Danh sách
+          CRM</button>
+      </div>
+    </div>
+
+    <!-- VIEW 1: THU THẢO WORKSPACE -->
+    <main class="workspace-section insight-canvas" id="workspace-section">
+  <!-- FLOATING LEFT ICON DOCK -->
+  <aside class="insight-icon-dock" aria-label="Quick Navigation Dock">
+    <button type="button" class="dock-icon-btn" title="Trang chủ / Giới thiệu" onclick="navigateToSection('gioi-thieu')">⊞</button>
+    <button type="button" class="dock-icon-btn active" title="Quy trình xử lý cơ hội B2B" onclick="switchPrimaryView('workflow')">📈</button>
+    <button type="button" class="dock-icon-btn" title="Đọc file &amp; Thống kê" onclick="switchPrimaryView('analytics')">🗄️</button>
+    <button type="button" class="dock-icon-btn" title="Danh mục CRM" onclick="switchPrimaryView('crm')">💼</button>
+    <button type="button" class="dock-icon-btn" title="Báo cáo &amp; Đề xuất giải pháp" onclick="openExecutiveReportModal()">📄</button>
+    <button type="button" class="dock-icon-btn" title="Bảng giá chuẩn" onclick="openCatalogModal()">📥</button>
+    <button type="button" class="dock-icon-btn" title="Ghi chú &amp; Audit Log" onclick="toggleUtilityDrawer('notes')">❓</button>
+  </aside>
+
+  <!-- TOP HEADER BAR -->
+  <header class="insight-top-bar">
+    <a href="#gioi-thieu" class="insight-brand-pill" onclick="navigateToSection('gioi-thieu'); return false;">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="22 7 13.5 15.5 8.5 10.5 2 17"></polyline>
+        <polyline points="16 7 22 7 22 13"></polyline>
+      </svg>
+      <span>Thu Thảo Company</span>
+    </a>
+
+    <div class="insight-center-pill">
+      <span>🔮 Không gian cho những quyết định tốt hơn</span>
+      <span class="insight-ai-tag">AI AGENT</span>
+    </div>
+
+    <div class="insight-user-pill">
+      <button type="button" class="insight-icon-action" title="Trang chủ" onclick="navigateToSection('gioi-thieu')">🏠</button>
+      <button type="button" class="insight-icon-action" title="Ghi chú &amp; Log" onclick="toggleUtilityDrawer('notes')">📋</button>
+      <button type="button" class="insight-icon-action" title="Cấu hình API Gemini" onclick="openApiModal()">⚙️</button>
+      <span class="insight-user-avatar" title="Thu Thảo Company">T</span>
+    </div>
+  </header>
+
+  <!-- INSIGHT STUDIO MAIN CARD -->
+  <div class="insight-studio-card reveal-up" data-reveal>
+    <!-- HORIZONTAL STEPPER TRACK -->
+    <div class="insight-stepper-track" role="tablist">
+      <button type="button" class="rail-step active" id="rail-step-1" onclick="goToStage('step1')">
+        <span class="rail-badge">01</span>
+        <span class="rail-text"><small>BƯỚC 1</small><strong>Nhập dữ liệu</strong></span>
+      </button>
+
+      <button type="button" class="rail-step" id="rail-step-2" onclick="goToStage('step2')">
+        <span class="rail-badge">02</span>
+        <span class="rail-text"><small>BƯỚC 2</small><strong>Thẩm định ĐK1</strong></span>
+      </button>
+
+      <button type="button" class="rail-step branch-clarify" id="rail-step-clarify" onclick="goToStage('clarify')">
+        <span class="rail-badge warn">!</span>
+        <span class="rail-text"><small>LÀM RÕ</small><strong>Bổ sung thông tin</strong></span>
+      </button>
+
+      <button type="button" class="rail-step" id="rail-step-3" onclick="goToStage('step3')">
+        <span class="rail-badge">03</span>
+        <span class="rail-text"><small>BƯỚC 3</small><strong>Khớp sản phẩm</strong></span>
+      </button>
+
+      <button type="button" class="rail-step" id="rail-step-4" onclick="goToStage('step4')">
+        <span class="rail-badge">04</span>
+        <span class="rail-text"><small>BƯỚC 4</small><strong>Dự thảo báo giá</strong></span>
+      </button>
+
+      <button type="button" class="rail-step end-node" id="rail-step-5" onclick="goToStage('step5')">
+        <span class="rail-badge end">05</span>
+        <span class="rail-text"><small>BƯỚC 5</small><strong>Kết quả &amp; CRM</strong></span>
+      </button>
+    </div>
+
+    <!-- STEP TITLE & SUBTITLE -->
+    <div style="margin-bottom:1.5rem;">
+      <h1 class="studio-stage-title" id="studio-stage-title" style="font-size:1.75rem; margin-bottom:0.35rem;">Nhập bảng tính &amp; Hồ sơ cơ hội</h1>
+      <p class="studio-stage-desc" id="studio-stage-desc" style="font-size:0.9rem; margin-bottom:0;">Chọn hoặc kéo thả file Excel, Lark, CSV, Word, PDF để kiểm tra dữ liệu và phân tích cơ hội bán hàng.</p>
+    </div>
+
+    <div class="workspace-grid">
+      <div class="workspace-main-col">
+
+        <!-- BƯỚC 1: TIẾP NHẬN (TWO COLUMN INSIGHT LAYOUT) -->
+        <section class="stage-card active" id="stage-step1">
+          <div id="step1-header-banner" style="display:none;"><span id="step1-tag"></span><h3 id="step1-header-title"></h3></div>
+          <div id="step1-error-banner" style="display:none; margin:0 0 1rem 0; padding:0.85rem 1.1rem; background:#fef2f2; border:1px solid #f87171; border-radius:12px; color:#991b1b; font-size:0.84rem; line-height:1.5;"></div>
+
+          <div class="insight-two-col">
+            <!-- LEFT COLUMN: BIG DROPZONE + FORM -->
+            <div class="insight-left-col">
+              <div class="insight-big-dropzone" id="step1-file-dropzone" role="button" tabindex="0" onclick="document.getElementById('req-file-input').click()">
+                <svg class="dropzone-file-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                  <polyline points="14 2 14 8 20 8"></polyline>
+                  <line x1="16" y1="13" x2="8" y2="13"></line>
+                  <line x1="16" y1="17" x2="8" y2="17"></line>
+                  <polyline points="10 9 9 9 8 9"></polyline>
+                </svg>
+                <div class="dropzone-main-title">Thả bảng tính của bạn vào đây</div>
+                <div class="dropzone-main-desc">Excel hoặc CSV, Lark, Word, PDF • Dữ liệu được xử lý ngay trên trình duyệt</div>
+                <button type="button" class="btn-select-file-pill" onclick="document.getElementById('req-file-input').click()">
+                  <span>📁</span>
+                  <span>Chọn bảng tính / hồ sơ</span>
+                </button>
+                <input type="file" id="req-file-input" style="display:none;" accept=".xlsx,.xls,.csv,.tsv,.json,.txt,.md,.eml,.docx,.doc,.rtf,.pdf,.png,.jpg,.jpeg,.webp" onchange="handleRequestFileUpload(event)">
+                <div id="step1-loaded-file-badge" class="loaded-file-badge" style="display:none; margin-top:0.4rem;"></div>
+              </div>
+
+              <!-- Input Fields Accordion / Card -->
+              <div class="studio-card" style="margin-bottom:0;">
+                <div class="field-row-2">
+                  <div class="field-group">
+                    <label class="field-label" for="inp-company">Tên Doanh nghiệp / Khách hàng <span class="req">*</span></label>
+                    <input type="text" id="inp-company" class="input-field" placeholder="Ví dụ: Tập đoàn Viễn thông Sao Việt, Alpha Tech..." oninput="onStep1Input()">
+                  </div>
+                  <div class="field-group">
+                    <label class="field-label" for="inp-contact">Đầu mối liên hệ &amp; Email <span class="req">*</span></label>
+                    <input type="text" id="inp-contact" class="input-field" placeholder="Ví dụ: Anh Nguyễn Văn A (procurement@doitac.vn)" oninput="onStep1Input()">
+                  </div>
+                </div>
+
+                <div class="field-group">
+                  <label class="field-label" for="inp-channel">Kênh tiếp nhận cơ hội</label>
+                  <select id="inp-channel" class="input-field" onchange="onStep1Input()">
+                    <option value="Email" selected>Email trực tiếp</option>
+                    <option value="Biểu mẫu Web">Biểu mẫu Web doanh nghiệp</option>
+                    <option value="File Excel / CSV">Tệp Bảng tính Excel / CSV chào giá</option>
+                    <option value="Lark Base / Sheet">Lark Base / Lark Sheet tích hợp</option>
+                    <option value="PDF / Word / Ảnh">Hồ sơ Word, PDF hoặc Ảnh chụp Đơn hàng</option>
+                  </select>
+                </div>
+
+                <div class="field-group" style="margin-bottom:0;">
+                  <label class="field-label" for="inp-raw-text">Nội dung Yêu cầu Bán hàng &amp; Quy cách Đơn hàng <span class="req">*</span></label>
+                  <textarea id="inp-raw-text" class="input-field" style="min-height:95px; line-height:1.55;" placeholder="Mô tả cụ thể: Danh mục thiết bị/dịch vụ, số lượng dự kiến, ngân sách trần, tiến độ giao hàng..." oninput="onStep1Input()"></textarea>
+                </div>
+              </div>
+
+              <!-- Action Button -->
+              <div style="display:flex; justify-content:flex-end; gap:0.65rem;">
+                <button type="button" class="btn-row-action" onclick="startNewOpportunity()">Làm mới</button>
+                <button type="button" class="btn-studio-sparkle primary" id="btn-step1-next" onclick="proceedStep1ToStep2()">
+                  <span>⚡</span>
+                  <span>Bóc tách &amp; Thẩm định ĐK1 →</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- RIGHT COLUMN: REQUIRED FIELDS + DEMO PRESETS -->
+            <div class="insight-right-col">
+              <div class="insight-requirements-card">
+                <div class="requirements-card-title">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:#0F2A43;">
+                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+                  </svg>
+                  <span>Các cột dữ liệu ĐK1 cần có</span>
+                </div>
+
+                <div class="required-fields-stack">
+                  <div class="required-field-item">
+                    <span>Mã khách hàng / Tên đối tác</span>
+                    <span class="required-tag-badge mandatory">BẮT BUỘC</span>
+                  </div>
+                  <div class="required-field-item">
+                    <span>Mã đơn hàng / Danh mục sản phẩm</span>
+                    <span class="required-tag-badge mandatory">BẮT BUỘC</span>
+                  </div>
+                  <div class="required-field-item">
+                    <span>Số lượng yêu cầu &amp; Ngày giao</span>
+                    <span class="required-tag-badge mandatory">BẮT BUỘC</span>
+                  </div>
+                  <div class="required-field-item">
+                    <span>Doanh thu / Đơn giá dự kiến</span>
+                    <span class="required-tag-badge mandatory">BẮT BUỘC</span>
+                  </div>
+                  <div class="required-field-item">
+                    <span>Ngân sách trần dự trù</span>
+                    <span class="required-tag-badge mandatory">BẮT BUỘC</span>
+                  </div>
+                  <div class="required-field-item">
+                    <span>Trạng thái &amp; Tỷ lệ chiết khấu</span>
+                    <span class="required-tag-badge">TÙY CHỌN</span>
+                  </div>
+                </div>
+
+                <div class="insight-explore-section">
+                  <div class="explore-title">Chưa có dữ liệu? Khám phá thử:</div>
+                  <div class="explore-btn-stack">
+                    <button type="button" class="btn-explore-sample" onclick="loadSampleSimulatedDeal()">
+                      <span>📄</span>
+                      <span>Thử dữ liệu giả lập (Sao Việt Telecom)</span>
+                    </button>
+                    <button type="button" class="btn-explore-sample" onclick="loadSampleInvalidDeal()">
+                      <span>⚠️</span>
+                      <span>Thử file không hợp lệ (Thiếu thông tin)</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- BƯỚC 2: PHÂN LOẠI & ĐK1 (7 TRƯỜNG & GAP AUDIT) -->
+            <section class="stage-card" id="stage-step2">
+              <div class="stage-header-banner blue-banner compact-banner">
+                <span class="stage-tag blue">BƯỚC 2</span>
+                <h3>Phân loại &amp; Kiểm tra thông tin</h3>
+                <span class="badge-counter-pill" id="step2-file-status-badge"
+                  style="margin-left:auto; background:#fee2e2; color:#991b1b; border:1px solid #f87171; font-weight:800; font-size:0.75rem;">FILE_TRONG_HOAC_NHIEU</span>
+              </div>
+
+              <div class="sub-panel-card">
+                <div class="sub-panel-head-row" style="margin-bottom:0.5rem;">
+                  <div class="sub-panel-title" style="margin-bottom:0;">7 Trường nghiệp vụ cốt lõi (Semantic Mapping)
+                  </div>
+                  <button type="button" class="btn-row-action" style="font-size:0.75rem; font-weight:700;"
+                    onclick="viewCurrentStep2Json()">📄 Xem JSON Chuẩn</button>
+                </div>
+                <div class="extracted-grid-7" id="step2-extracted-cards"></div>
+              </div>
+
+              <!-- GAP AUDIT & SMART FOLLOW-UP PROMPTS CHO BƯỚC 2 -->
+              <div id="step2-gap-audit-box" class="sub-panel-card"
+                style="margin-top:0.85rem; background:#f8fafc; border:1px solid #cbd5e1; border-radius:8px; padding:0.95rem 1.15rem;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.45rem;">
+                  <strong style="color:#0f172a; font-size:0.86rem; display:flex; align-items:center; gap:0.4rem;">
+                    <span>🛡️ Ghi chú kiểm toán thiếu sót (Gap Audit)</span>
+                  </strong>
+                  <button type="button" class="btn-row-action" style="font-size:0.73rem; padding:0.2rem 0.55rem;"
+                    onclick="copyCurrentStep2Json()">Sao chép JSON</button>
+                </div>
+                <div id="step2-audit-note" style="font-size:0.82rem; color:#334155; line-height:1.55;"></div>
+
+                <div id="step2-followup-prompts-wrap"
+                  style="margin-top:0.75rem; border-top:1px dashed #cbd5e1; padding-top:0.6rem;">
+                  <div style="font-weight:700; font-size:0.8rem; color:#1e293b; margin-bottom:0.35rem;">
+                    💡 Gợi ý câu hỏi phân tích &amp; hành động tiếp theo (Smart Follow-up Prompts):
+                  </div>
+                  <div id="step2-followup-prompts-list" style="display:flex; flex-direction:column; gap:0.35rem;"></div>
+                </div>
+              </div>
+
+              <div class="diamond-decision-box" id="diamond-box-1" style="margin-top:0.85rem;">
+                <div class="diamond-title-row">
+                  <span class="diamond-chip">Có đủ thông tin?</span>
+                  <span class="status-pill" id="diamond-1-status">Đủ</span>
+                </div>
+                <ul class="check-list" id="diamond-1-checklist"></ul>
+                <div class="decision-callout" id="diamond-1-callout"></div>
+
+                <div class="decision-btn-row">
+                  <button type="button" class="btn-branch-warn" id="btn-dk1-false"
+                    onclick="triggerCondition1False()">Không (Yêu cầu làm rõ / bổ sung)</button>
+                  <button type="button" class="btn-lime-full btn-compact-lg is-disabled-locked" id="btn-dk1-true"
+                    disabled onclick="triggerCondition1True()">Có (Sang Bước 3) →</button>
+                </div>
+              </div>
+            </section>
+
+            <!-- NHÁNH LÀM RÕ & LOOP B1 -->
+            <section class="stage-card" id="stage-clarify">
+              <div class="stage-header-banner amber-banner compact-banner">
+                <span class="stage-tag amber">NHÁNH LÀM RÕ</span>
+                <h3>Yêu cầu KH làm rõ / bổ sung</h3>
+              </div>
+
+              <div class="sub-panel-card">
+                <div id="clarify-missing-tags" class="missing-tags-wrap"></div>
+
+                <div class="field-group" style="margin-top:0.85rem;">
+                  <div class="sub-panel-head-row" style="margin-bottom:0.4rem;">
+                    <label class="field-label" for="clarify-email-draft" style="margin-bottom:0;">Bản nháp Email hỏi
+                      khách hàng</label>
+                    <div style="display:flex; gap:0.4rem; align-items:center;">
+                      <span id="clarify-draft-status"
+                        style="font-size:0.75rem; color:#d97706; font-weight:700; display:none;">Đang soạn
+                        email...</span>
+                      <button type="button" class="btn-row-action" onclick="copyClarifyDraft()">Sao chép</button>
+                      <a id="btn-clarify-mailto" class="btn-row-action" href="#" target="_blank"
+                        style="text-decoration:none;">Mở bằng ứng dụng mail</a>
+                      <button type="button" class="btn-row-action" onclick="regenerateClarifyDraft()">Soạn lại</button>
+                    </div>
+                  </div>
+                  <textarea id="clarify-email-draft" class="input-field"
+                    style="min-height:150px; line-height:1.55;"></textarea>
+                </div>
+
+                <!-- Ô Dán phản hồi của khách hàng (Requirement 3) -->
+                <div class="field-group" style="margin-top:1rem; border-top:1px dashed #cbd5e1; padding-top:0.85rem;">
+                  <div class="sub-panel-head-row" style="margin-bottom:0.4rem;">
+                    <label class="field-label" for="customer-reply-input"
+                      style="margin-bottom:0; font-weight:700; color:#0f172a;">Dán phản hồi của khách vào đây</label>
+                    <span style="font-size:0.75rem; color:#64748b;">(Agent tự bóc tách và chạy lại ĐK1)</span>
+                  </div>
+                  <textarea id="customer-reply-input" class="input-field" style="min-height:80px; line-height:1.5;"
+                    placeholder="Dán nội dung phản hồi từ email/chat của khách hàng vào đây... (Ví dụ: Ngân sách bên mình khoảng 500 triệu, cần giao hàng trong 10 ngày tới)"></textarea>
+                  <div style="display:flex; justify-content:flex-end; margin-top:0.5rem;">
+                    <button type="button" class="btn-lime-full btn-compact" id="btn-analyze-reply"
+                      onclick="analyzeCustomerReply()">⚡ Phân tích phản hồi</button>
+                  </div>
+                </div>
+
+                <div class="clarify-quick-input" style="margin-top:1rem;">
+                  <div class="sub-panel-title" style="margin-bottom:0.5rem;">Hoặc Bổ sung nhanh thông tin thủ công:
+                  </div>
+                  <div class="three-col-grid">
+                    <div class="field-group">
+                      <label class="field-label" for="loop-budget">Ngân sách</label>
+                      <input type="text" id="loop-budget" class="input-field" placeholder="Ví dụ: 450 triệu">
+                    </div>
+                    <div class="field-group">
+                      <label class="field-label" for="loop-days">Thời hạn (ngày)</label>
+                      <input type="number" id="loop-days" class="input-field" placeholder="Ví dụ: 14">
+                    </div>
+                    <div class="field-group">
+                      <label class="field-label" for="loop-discount">Chiết khấu (%)</label>
+                      <input type="number" id="loop-discount" class="input-field" placeholder="Ví dụ: 4">
+                    </div>
+                  </div>
+                  <div style="display:flex; justify-content:flex-end; margin-top:0.5rem;">
+                    <button type="button" class="btn-row-action" id="btn-confirm-manual-clarify"
+                      onclick="applyManualClarifyInputs()">✓ Xác nhận thông tin bổ sung</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="decision-btn-row">
+                <button type="button" class="btn-row-action" onclick="loopBackToStep1()">↺ Quay lại Tiếp nhận yêu cầu
+                  (Bước 1)</button>
+                <button type="button" class="btn-row-action" onclick="saveClarifySnapshotToCrm()">Lưu CRM</button>
+                <button type="button" class="btn-lime-full btn-compact-lg" id="btn-clarify-continue-assumption"
+                  onclick="continueFromClarifyWithAssumptions()">Dùng giả định &amp; Sang Bước 3 →</button>
+              </div>
+            </section>
+
+            <!-- BƯỚC 3: TẠO HỒ SƠ & GÁN -->
+            <section class="stage-card" id="stage-step3">
+              <div class="stage-header-banner blue-banner compact-banner">
+                <span class="stage-tag blue">BƯỚC 3</span>
+                <h3>Tạo Hồ sơ Cơ hội &amp; Gán người phụ trách</h3>
+              </div>
+
+              <div class="sub-panel-card">
+                <div class="field-row-2">
+                  <div class="field-group">
+                    <label class="field-label" for="assign-deal-id">Mã cơ hội</label>
+                    <input type="text" id="assign-deal-id" class="input-field mono-field" readonly>
+                  </div>
+                  <div class="field-group">
+                    <label class="field-label" for="assign-category">Nhóm giải pháp</label>
+                    <input type="text" id="assign-category" class="input-field readonly-soft" readonly>
+                  </div>
+                </div>
+
+                <div class="field-row-2">
+                  <div class="field-group">
+                    <label class="field-label" for="assign-owner">NVKD phụ trách</label>
+                    <select id="assign-owner" class="input-field" onchange="syncStep3Assignment()">
+                      <option value="Thu Thảo" selected>Thu Thảo</option>
+                      <option value="Nguyễn Hoàng Nam">Nguyễn Hoàng Nam</option>
+                      <option value="Trần Minh Thư">Trần Minh Thư</option>
+                      <option value="Lê Quốc Bảo">Lê Quốc Bảo</option>
+                    </select>
+                  </div>
+                  <div class="field-group">
+                    <label class="field-label" for="assign-ops">Bộ phận Vận hành</label>
+                    <select id="assign-ops" class="input-field" onchange="syncStep3Assignment()">
+                      <option value="Phạm Tuấn Anh (Vận hành)">Phạm Tuấn Anh (Vận hành)</option>
+                      <option value="Đội Kỹ thuật Thu Thảo">Đội Kỹ thuật Thu Thảo</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div class="standardized-summary" id="step3-standardized-summary"></div>
+              </div>
+
+              <div class="decision-btn-row">
+                <button type="button" class="btn-row-action" onclick="goToStage('step2')">← Bước 2: Phân loại &amp; Kiểm
+                  tra</button>
+                <button type="button" class="btn-lime-full btn-compact-lg" onclick="proceedStep3ToStep4()">Sang Bước 4:
+                  Lập Báo giá &amp; Dự thảo đề xuất →</button>
+              </div>
+            </section>
+
+            <!-- BƯỚC 4: LẬP BÁO GIÁ & DỰ THẢO ĐỀ XUẤT -->
+            <section class="stage-card" id="stage-step4">
+              <div class="stage-header-banner blue-banner compact-banner">
+                <span class="stage-tag blue">BƯỚC 4</span>
+                <h3>Lập Báo giá &amp; Dự thảo đề xuất</h3>
+              </div>
+
+              <!-- Bảng danh mục sản phẩm & đơn giá -->
+              <div class="sub-panel-card">
+                <div class="sub-panel-head-row">
+                  <div class="sub-panel-title" style="margin-bottom:0;">Danh mục sản phẩm &amp; Đơn giá niêm yết</div>
+                  <button type="button" class="btn-row-action" onclick="openCatalogModal()">Mở Bảng giá</button>
+                </div>
+
+                <div style="overflow-x:auto;">
+                  <table class="data-table">
+                    <thead>
+                      <tr>
+                        <th>Sản phẩm</th>
+                        <th>Số lượng</th>
+                        <th>Đơn giá</th>
+                        <th>Cung ứng</th>
+                        <th>Lead-time</th>
+                        <th>Thành tiền</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody id="step4-appraisal-tbody"></tbody>
+                  </table>
+                </div>
+              </div>
+
+              <!-- Khung 2 cột: Tài chính & Dự thảo đề xuất -->
+              <div class="two-col-quote" style="margin-top:0.85rem;">
+                <div class="sub-panel-card">
+                  <div class="sub-panel-title">Tài chính &amp; Chiết khấu</div>
+                  <div class="discount-control-box">
+                    <div
+                      style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.35rem;">
+                      <label class="field-label" for="step5-discount-slider" style="margin-bottom:0;">Chiết khấu
+                        (%)</label>
+                      <strong id="step5-discount-badge" style="font-size:1.05rem; color:#0284c7;">5%</strong>
+                    </div>
+                    <input type="range" id="step5-discount-slider" min="0" max="25" step="1" value="5"
+                      class="range-slider" oninput="updateStep5Discount(this.value)">
+                    <div class="policy-caption">Chính sách thương mại: Áp dụng chiết khấu và tính giá tự động</div>
+                  </div>
+
+                  <div class="totals-card-box">
+                    <div class="total-row"><span>Niêm yết:</span><strong id="step5-subtotal">0 ₫</strong></div>
+                    <div class="total-row discount"><span>Chiết khấu:</span><strong id="step5-discount-amt">-0
+                        ₫</strong></div>
+                    <div class="total-row"><span>VAT (10%):</span><strong id="step5-vat">0 ₫</strong></div>
+                    <div class="total-row"><span>Biên LN:</span><strong id="step5-margin">0%</strong></div>
+                    <div class="total-row"><span>Ngân sách:</span><strong id="step5-budget-check">-</strong></div>
+                    <div class="total-row grand"><span>TỔNG ĐỀ XUẤT:</span><span id="step5-grand-total">0 ₫</span></div>
+                  </div>
+                </div>
+
+                <div class="sub-panel-card">
+                  <div class="sub-panel-head-row">
+                    <div class="sub-panel-title" style="margin-bottom:0;">Dự thảo đề xuất gửi khách hàng</div>
+                    <button type="button" class="btn-row-action" onclick="regenerateProposalDraft()">Tạo lại</button>
+                  </div>
+                  <textarea id="step5-draft-editor" class="input-field" style="min-height:220px; line-height:1.5;"
+                    oninput="state.opp.proposalDraft = this.value"></textarea>
+                </div>
+              </div>
+
+              <div class="decision-btn-row">
+                <button type="button" class="btn-row-action" onclick="goToStage('step3')">← Bước 3: Hồ sơ</button>
+                <button type="button" class="btn-lime-full btn-compact-lg" onclick="proceedStep4ToStep5()">Kết thúc: Cập
+                  nhật &amp; Theo dõi (Bước 5) →</button>
+              </div>
+            </section>
+
+            <!-- BƯỚC 5: KẾT THÚC — CẬP NHẬT & THEO DÕI -->
+            <section class="stage-card" id="stage-step5">
+              <div class="stage-header-banner coral-banner compact-banner">
+                <span class="stage-tag coral">KẾT THÚC</span>
+                <h3>Kết thúc: Cập nhật &amp; Theo dõi</h3>
+              </div>
+
+              <!-- BÁO CÁO NGẮN KÈM DASHBOARD TRỰC QUAN -->
+              <div id="executive-dashboard-report"></div>
+
+              <div class="finish-summary-card" id="step6-final-summary"></div>
+
+              <!-- BÁO CÁO KINH DOANH & ĐỀ XUẤT GIẢI PHÁP ĐỘNG (6 PHẦN) -->
+              <div class="sub-panel-card" id="step5-prose-report-card"
+                style="margin-top:0.85rem; border:1.5px solid #10b981; background:#ffffff; border-radius:8px; padding:1.15rem 1.35rem;">
+                <div class="sub-panel-head-row"
+                  style="margin-bottom:0.6rem; border-bottom:1px solid #e2e8f0; padding-bottom:0.45rem;">
+                  <div class="sub-panel-title"
+                    style="margin-bottom:0; color:#065f46; display:flex; align-items:center; gap:0.45rem; font-weight:800; font-size:0.95rem;">
+                    <span>📝 BÁO CÁO KINH DOANH &amp; ĐỀ XUẤT GIẢI PHÁP ĐỘNG (6 PHẦN)</span>
+                  </div>
+                  <div style="display:flex; gap:0.4rem; flex-wrap:wrap;">
+                    <button type="button" class="btn-row-action" style="font-size:0.75rem; font-weight:700;"
+                      onclick="copyStep5ProseReport()">📋 Sao chép văn bản</button>
+                    <button type="button" class="btn-row-action"
+                      style="background:#2563eb; color:#ffffff; font-size:0.75rem; font-weight:800; border-color:#1d4ed8;"
+                      onclick="exportBusinessReportDocx()">📄 Xuất file Word (.docx)</button>
+                    <button type="button" class="btn-row-action" style="font-size:0.75rem; font-weight:700;"
+                      onclick="openExecutiveReportModal()">🔍 Phóng to</button>
+                  </div>
+                </div>
+                <div id="step5-prose-report-content" style="font-size:0.88rem; line-height:1.65; color:#1e293b;"></div>
+              </div>
+
+              <!-- ĐẦU RA JSON CHUẨN (GIỮ ĐỦ TẤT CẢ CÁC TRƯỜNG KỂ CẢ TRƯỜNG TRỐNG) -->
+              <div class="sub-panel-card"
+                style="margin-top:0.85rem; border:1.5px solid #0284c7; background:#f8fafc; border-radius:8px; padding:0.95rem 1.15rem;">
+                <div class="sub-panel-head-row" style="margin-bottom:0.45rem;">
+                  <div class="sub-panel-title"
+                    style="margin-bottom:0; color:#0369a1; display:flex; align-items:center; gap:0.4rem; font-weight:800;">
+                    <span>📋 ĐẦU RA CUỐI CHUẨN JSON (GIỮ ĐỦ TẤT CẢ CÁC TRƯỜNG)</span>
+                  </div>
+                  <div style="display:flex; gap:0.4rem;">
+                    <button type="button" class="btn-row-action" style="font-size:0.75rem; font-weight:700;"
+                      onclick="copyFinalCanonicalJson()">Sao chép JSON</button>
+                    <button type="button" class="btn-row-action" style="font-size:0.75rem; font-weight:700;"
+                      onclick="viewFinalCanonicalJsonModal()">Phóng to</button>
+                  </div>
+                </div>
+                <div style="font-size:0.76rem; color:#64748b; margin-bottom:0.45rem;">
+                  Tuân thủ nghiêm ngặt nguyên tắc: Trường thiếu = null (để trống). Không tự bịa số hay điền giá trị mẫu.
+                </div>
+                <pre id="final-canonical-json-pre"
+                  style="background:#0f172a; color:#f8fafc; padding:1rem; border-radius:6px; font-family:monospace; font-size:0.82rem; line-height:1.45; max-height:260px; overflow-y:auto; margin:0;"></pre>
+              </div>
+
+              <div class="sub-panel-card">
+                <div class="sub-panel-head-row">
+                  <div class="sub-panel-title" style="margin-bottom:0;">Căn cứ đối chiếu hồ sơ</div>
+                  <span class="badge-counter-pill" id="step6-status-pill">Đã hoàn tất</span>
+                </div>
+                <div id="step6-evidence-box" class="evidence-grid"></div>
+              </div>
+
+              <div class="two-col-quote">
+                <div class="sub-panel-card">
+                  <div class="sub-panel-head-row">
+                    <div class="sub-panel-title" style="margin-bottom:0;">Email phản hồi KH chính thức</div>
+                    <button type="button" class="btn-row-action" onclick="copyFinalProposalEmail()">Sao chép</button>
+                  </div>
+                  <pre id="step6-email-preview" class="approval-slip-pre" style="max-height:200px;"></pre>
+                </div>
+
+                <div class="sub-panel-card">
+                  <div class="sub-panel-head-row">
+                    <div class="sub-panel-title" style="margin-bottom:0;">Nhật ký thực thi (Audit Log)</div>
+                    <button type="button" class="btn-row-action" onclick="downloadExecutionLog()">Tải Log</button>
+                  </div>
+                  <pre id="step6-log-preview" class="approval-slip-pre" style="max-height:200px;"></pre>
+                </div>
+              </div>
+
+              <div class="finish-actions-grid">
+                <button type="button" class="btn-lime-full btn-compact-lg" onclick="saveFinalRecordToCrm()">Lưu
+                  CRM</button>
+                <button type="button" class="btn-row-action"
+                  style="background:#2563eb; color:#ffffff; font-weight:800; border-color:#1d4ed8;"
+                  onclick="exportBusinessReportDocx()">📄 Xuất file Word (.docx)</button>
+                <button type="button" class="btn-row-action" onclick="exportProposalExcel()">Xuất Excel</button>
+                <button type="button" class="btn-row-action" onclick="exportProposalPdf()">Xuất PDF</button>
+                <button type="button" class="btn-row-action" onclick="exportStructuredAuditJson()">Audit JSON</button>
+                <button type="button" class="btn-row-action" onclick="startNewOpportunity()">+ Mới</button>
+              </div>
+            </section>
+
+          </div>
+
+          <!-- COMPACT RIGHT SNAPSHOT CARD (Always concise!) -->
+          <aside class="workspace-sidebar-col">
+            <div class="sidebar-card">
+              <div class="sub-panel-head-row" style="margin-bottom:0.55rem;">
+                <div class="sidebar-card-title" style="margin-bottom:0;">Tóm tắt hồ sơ</div>
+                <button type="button" class="link-btn" onclick="toggleUtilityDrawer('notes')">Xem Log &amp; Ghi
+                  chú</button>
+              </div>
+              <div class="snapshot-deal-id" id="snap-deal-id">CHƯA CẤP MÃ</div>
+              <div class="snapshot-company" id="snap-company">Chưa có khách hàng</div>
+              <div class="snapshot-owner" id="snap-owner">Phụ trách: Thu Thảo</div>
+              <div class="snapshot-status-badge" id="snap-status-badge">Bước 1</div>
+
+              <div class="snapshot-metrics-grid">
+                <div class="snap-kv"><span>Số lượng</span><strong id="snap-items-count">—</strong></div>
+                <div class="snap-kv"><span>Chiết khấu</span><strong id="snap-discount">0%</strong></div>
+                <div class="snap-kv"><span>Ngân sách</span><strong id="snap-budget">—</strong></div>
+                <div class="snap-kv"><span>Biên LN</span><strong id="snap-margin">—</strong></div>
+              </div>
+
+              <div class="snapshot-total-row">
+                <span>Tổng đề xuất:</span>
+                <strong id="snap-grand-total">0 ₫</strong>
+              </div>
+              <button type="button" class="btn-lime-full btn-compact"
+                style="width:100%; margin-top:0.65rem; font-weight:800; font-size:0.78rem;"
+                onclick="openExecutiveReportModal()">📋 Xem Báo cáo &amp; Đề xuất Giải pháp</button>
+
+              <div style="margin-top:0.85rem; display:flex; gap:0.45rem;">
+                <button type="button" class="btn-row-action" style="flex:1;" onclick="toggleUtilityDrawer('map')">Sơ
+                  đồ</button>
+                <button type="button" class="btn-row-action" style="flex:1;" onclick="toggleUtilityDrawer('notes')">Ghi
+                  chú</button>
+              </div>
+            </div>
+          </aside>
+        </div>
+
+      </div>
+    
+
+  <!-- BOTTOM FLOATING DOCK BAR -->
+  <nav class="insight-bottom-dock" aria-label="Bottom Quick Dock">
+    <div class="bottom-dock-pill">
+      <button type="button" class="dock-tab-btn" onclick="toggleUtilityDrawer('notes')">📅 Toàn bộ thời gian ▾</button>
+    </div>
+    <div class="bottom-dock-pill">
+      <button type="button" class="dock-tab-btn" onclick="navigateToSection('gioi-thieu')">Tổng quan</button>
+      <button type="button" class="dock-tab-btn active" onclick="switchPrimaryView('workflow')">Quy trình AI</button>
+      <button type="button" class="dock-tab-btn" onclick="switchPrimaryView('analytics')">Dữ liệu &amp; CRM</button>
+      <button type="button" class="dock-tab-btn" onclick="openExecutiveReportModal()">Báo cáo</button>
+    </div>
+  </nav>
+</main>
+
+
+    <!-- VIEW 2: MULTI-FORMAT FILE READER & ANALYTICS HUB -->
+    <section class="dashboard-content-section is-view-hidden" id="analytics-hub-section">
+      <div class="dashboard-card-wrap reveal-up" data-reveal>
+        <div class="section-title-header">
+          <div>
+            <h2>Đọc File (Excel • Lark • CSV) &amp; Thống kê</h2>
+          </div>
+          <span class="badge-counter-pill" id="dataset-source-pill">CRM + File tải lên</span>
+        </div>
+
+        <div class="analytics-import-grid">
+          <div id="multi-file-dropzone" class="drop-zone-box" role="button" tabindex="0"
+            onclick="document.getElementById('multi-file-input').click()">
+            <div style="font-weight:800; font-size:0.88rem; color:#0f172a;">Chọn hoặc kéo thả mọi loại File</div>
+            <div style="font-size:0.74rem; color:#64748b; margin-top:0.2rem;">Excel, Lark, CSV, JSON, Word, PDF, Ảnh,
+              TXT — AI tự đọc &amp; chuyển vào Quy trình Thu Thảo</div>
+            <input type="file" id="multi-file-input" style="display:none;" multiple
+              accept=".xlsx,.xls,.csv,.tsv,.json,.txt,.md,.eml,.docx,.doc,.rtf,.pdf,.png,.jpg,.jpeg,.webp"
+              onchange="handleMultiDatasetUpload(event)">
+          </div>
+
+          <div class="sub-panel-card"
+            style="display:flex; flex-direction:column; justify-content:space-between; gap:0.6rem;">
+            <div style="display:flex; gap:0.45rem; flex-wrap:wrap;">
+              <button type="button" class="btn-row-action" onclick="toggleLarkApiBox()">Lark Base API</button>
+              <button type="button" class="btn-row-action" onclick="toggleLarkPasteBox()">Dán Lark</button>
+              <button type="button" class="btn-row-action" onclick="toggleUrlImportBox()">Nạp Link URL</button>
+              <button type="button" class="btn-row-action" onclick="toggleColumnMappingPanel()">Ánh xạ cột</button>
+              <button type="button" class="btn-row-action" onclick="clearImportedDataset()">Xóa dữ liệu</button>
+              <button type="button" class="btn-lime-full btn-compact" id="btn-batch-run" style="font-weight:700;"
+                onclick="runDatasetAiAgent()">⚡ Chạy AI Agent</button>
+              <button type="button" class="btn-row-action"
+                style="background:#2563eb; color:#ffffff; font-weight:800; border-color:#1d4ed8;"
+                onclick="exportBusinessReportDocx()">📄 Xuất Word (.docx)</button>
+              <button type="button" class="btn-row-action" onclick="exportAnalyticsReportExcel()">Xuất Excel</button>
+            </div>
+            <div id="dataset-schema-summary" style="font-size:0.77rem; color:#475569;">
+              Tổng <strong id="analytics-record-count">0</strong> bản ghi.
+            </div>
+          </div>
+        </div>
+
+        <!-- ERROR / STATUS BANNER FOR AI AGENT (NO FAKE FALLBACK) -->
+        <div id="analytics-error-banner"
+          style="display:none; margin-top:0.9rem; padding:0.85rem 1.1rem; background:#fef2f2; border:1px solid #f87171; border-radius:8px; color:#991b1b; font-size:0.84rem; line-height:1.5;">
+        </div>
+        <div id="analytics-progress-banner"
+          style="display:none; margin-top:0.9rem; padding:0.85rem 1.1rem; background:#eff6ff; border:1px solid #93c5fd; border-radius:8px; color:#1e40af; font-size:0.84rem; line-height:1.5;">
+        </div>
+
+        <!-- LARK BASE OPEN API INTEGRATION BOX -->
+        <div id="lark-api-box" class="sub-panel-card"
+          style="display:none; margin-top:0.9rem; border-color:#818cf8; background:#faf5ff;">
+          <div class="sub-panel-head-row">
+            <div class="sub-panel-title" style="margin-bottom:0; color:#4338ca; font-weight:800;">
+              ⚡ Đồng bộ Lark Base qua Lark Open API (Bitable)
+            </div>
+            <button type="button" class="btn-row-action" onclick="toggleLarkApiBox(false)">Đóng</button>
+          </div>
+          <div style="font-size:0.77rem; color:#475569; margin:0.35rem 0 0.65rem 0;">
+            Đọc App ID / Secret từ file <code>.env</code>. Nhập link Lark Base (chứa app_token &amp; table_id) hoặc Base
+            Token:
+          </div>
+          <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+            <input type="text" id="lark-base-url-input" class="input-field" style="flex:2; min-width:260px;"
+              placeholder="https://example.larksuite.com/base/bascnXXXXXXXXXX?table=tblYYYYYYYY">
+            <button type="button" class="btn-lime-full btn-compact" onclick="fetchLarkBaseFromApi()">Đồng bộ Lark
+              API</button>
+          </div>
+          <div id="lark-api-fallback-msg"
+            style="display:none; margin-top:0.65rem; padding:0.6rem 0.8rem; background:#fffbeb; border:1px solid #fde68a; border-radius:6px; font-size:0.78rem; color:#92400e;">
+            <span id="lark-api-err-text"></span>
+            <div style="margin-top:0.4rem;">
+              <button type="button" class="btn-row-action"
+                style="background:#ffffff; border-color:#d97706; color:#92400e; font-weight:700;"
+                onclick="document.getElementById('multi-file-input').click()">📂 Tải file CSV xuất từ Lark Base thay
+                thế</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="lark-paste-box" class="sub-panel-card" style="display:none; margin-top:0.9rem;">
+          <div class="sub-panel-head-row">
+            <div class="sub-panel-title" style="margin-bottom:0;">Dán bảng từ Lark / Excel / JSON</div>
+            <button type="button" class="btn-row-action" onclick="toggleLarkPasteBox(false)">Đóng</button>
+          </div>
+          <textarea id="lark-raw-input" class="input-field" rows="4"
+            placeholder="Dán dữ liệu bảng hoặc JSON Lark Base..."></textarea>
+          <div style="margin-top:0.65rem; display:flex; justify-content:flex-end;">
+            <button type="button" class="btn-lime-full btn-compact" onclick="parsePastedLarkData()">Đọc dữ liệu</button>
+          </div>
+        </div>
+
+        <div id="url-import-box" class="sub-panel-card" style="display:none; margin-top:0.9rem;">
+          <div class="sub-panel-head-row">
+            <div class="sub-panel-title" style="margin-bottom:0;">Nạp từ Google Sheets / CSV / Lark Link</div>
+            <button type="button" class="btn-row-action" onclick="toggleUrlImportBox(false)">Đóng</button>
+          </div>
+          <input type="url" id="dataset-url-input" class="input-field"
+            placeholder="https://docs.google.com/spreadsheets/d/... hoặc link CSV/JSON/Web...">
+          <div style="margin-top:0.65rem; display:flex; justify-content:flex-end;">
+            <button type="button" class="btn-lime-full btn-compact" onclick="fetchDatasetFromUrl()">Tải &amp; Phân
+              tích</button>
+          </div>
+        </div>
+
+        <!-- BẢNG ÁNH XẠ CỘT (SCHEMA DISCOVERY & MAPPING TABLE) -->
+        <div id="column-mapping-panel" class="sub-panel-card"
+          style="display:none; margin-top:0.9rem; border-color:#93c5fd; background:linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);">
+          <div class="sub-panel-head-row" style="align-items:center;">
+            <div>
+              <div class="sub-panel-title"
+                style="margin-bottom:0.15rem; color:#1e3a8a; font-weight:800; font-size:0.96rem;">
+                📋 Bảng Ánh xạ Cột (Tự nhận diện cấu trúc)
+              </div>
+              <div id="col-mapping-source-badge" style="font-size:0.75rem; color:#64748b;">
+                Nguồn dữ liệu: Chưa nạp file
+              </div>
+            </div>
+            <div style="display:flex; gap:0.4rem; align-items:center;">
+              <button type="button" class="btn-row-action" style="background:#ffffff; font-size:0.76rem;"
+                onclick="reanalyzeSchemaWithAi()">🤖 AI ánh xạ lại</button>
+              <button type="button" class="btn-lime-full btn-compact" id="btn-apply-col-map"
+                style="font-size:0.76rem; padding:0.4rem 0.85rem;" onclick="applyColumnMappingAndRun()">🚀 Chạy Quy
+                trình Thu Thảo (Làm sạch &amp; Phân tích)</button>
+              <button type="button" class="btn-row-action" style="background:#ffffff;"
+                onclick="toggleColumnMappingPanel(false)">Đóng</button>
+            </div>
+          </div>
+
+          <div id="col-mapping-banner" class="col-mapping-banner-ok"
+            style="font-size:0.78rem; border-radius:6px; padding:0.6rem 0.85rem; margin:0.45rem 0 0.75rem 0; line-height:1.45; background:#f0fdf4; border:1px solid #86efac; color:#15803d; transition: all 0.2s ease;">
+            AI đã tự động nhận diện các cột. Bạn có thể kiểm tra hoặc điều chỉnh lại nếu cần. Cột nào không có trong
+            file thì để trống, hệ thống sẽ tự động dùng giả định thông minh mà không báo lỗi.
+          </div>
+
+          <div class="table-scroll-container"
+            style="max-height:360px; overflow-y:auto; background:#ffffff; border-radius:8px; border:1px solid #cbd5e1;">
+            <table class="crm-table" id="col-mapping-table" style="margin:0;">
+              <thead>
+                <tr>
+                  <th style="width:26%;">Trường chuẩn hệ thống</th>
+                  <th style="width:38%;">Cột trong File của bạn</th>
+                  <th style="width:24%;">Giá trị mẫu (Dòng 1)</th>
+                  <th style="width:12%;">Trạng thái</th>
+                </tr>
+              </thead>
+              <tbody id="col-mapping-tbody">
+                <!-- Rendered dynamically by app.js -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="kpi-cards-grid" style="margin-top:1rem;">
+          <div class="kpi-stat-card">
+            <span class="kpi-label">DOANH THU / PIPELINE</span>
+            <strong class="kpi-value" id="kpi-total-revenue">0 ₫</strong>
+            <small class="kpi-sub" id="kpi-revenue-split">—</small>
+          </div>
+          <div class="kpi-stat-card">
+            <span class="kpi-label">LỢI NHUẬN &amp; BIÊN TB</span>
+            <strong class="kpi-value" id="kpi-margin-avg">0%</strong>
+            <small class="kpi-sub" id="kpi-profit-amount">—</small>
+          </div>
+          <div class="kpi-stat-card">
+            <span class="kpi-label">HIỆU SUẤT QUY TRÌNH</span>
+            <strong class="kpi-value" id="kpi-workflow-eff">0%</strong>
+            <small class="kpi-sub" id="kpi-workflow-detail">—</small>
+          </div>
+          <div class="kpi-stat-card">
+            <span class="kpi-label">CHIẾT KHẤU TB</span>
+            <strong class="kpi-value" id="kpi-discount-risk">0%</strong>
+            <small class="kpi-sub" id="kpi-risk-detail">—</small>
+          </div>
+        </div>
+
+        <div class="analytics-split-grid" style="margin-top:1rem;">
+          <div class="sub-panel-card">
+            <div class="sub-panel-head-row">
+              <div class="sub-panel-title" style="margin-bottom:0;">Phân nhóm dữ liệu</div>
+              <div class="group-by-pills" id="group-by-pills">
+                <button type="button" class="f-pill active" data-group="priorityTier"
+                  onclick="setAnalyticsGroupField('priorityTier')">Ưu tiên KH</button>
+                <button type="button" class="f-pill" data-group="projectType"
+                  onclick="setAnalyticsGroupField('projectType')">Loại dự án</button>
+                <button type="button" class="f-pill" data-group="owner"
+                  onclick="setAnalyticsGroupField('owner')">NVKD</button>
+                <button type="button" class="f-pill" data-group="category"
+                  onclick="setAnalyticsGroupField('category')">Danh mục</button>
+                <button type="button" class="f-pill" data-group="channel"
+                  onclick="setAnalyticsGroupField('channel')">Kênh</button>
+                <button type="button" class="f-pill" data-group="statusLabel"
+                  onclick="setAnalyticsGroupField('statusLabel')">Trạng thái</button>
+              </div>
+            </div>
+
+            <div class="modern-table-container">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>NHÓM</th>
+                    <th style="text-align:center;">SL</th>
+                    <th>DOANH THU</th>
+                    <th>TỶ TRỌNG</th>
+                    <th style="text-align:center;">CK TB</th>
+                    <th style="text-align:center;">BIÊN LN</th>
+                    <th style="text-align:center;">ĐẠT CHUẨN</th>
+                  </tr>
+                </thead>
+                <tbody id="grouped-analytics-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="sub-panel-card" style="display:flex; flex-direction:column; gap:0.7rem;">
+            <div class="sub-panel-head-row" style="margin-bottom:0;">
+              <div class="sub-panel-title" style="margin-bottom:0;">Báo cáo AI</div>
+              <button type="button" class="btn-lime-full btn-compact" onclick="generateAiExecutiveReport()">Phân tích
+                AI</button>
+            </div>
+            <div id="ai-report-box" class="ai-report-box">
+              Nhấn <strong>Phân tích AI</strong> sau khi tải file để xem đánh giá hiệu suất.
+            </div>
+          </div>
+        </div>
+
+        <div id="imported-rows-preview-wrap" class="sub-panel-card" style="margin-top:1rem; display:none;">
+          <div class="sub-panel-head-row">
+            <div class="sub-panel-title" style="margin-bottom:0;">Kết quả AI Agent Bóc tách &amp; Chuẩn hóa (Google AI
+              Studio)</div>
+            <button type="button" class="btn-row-action" onclick="clearImportedDataset()">Xóa dữ liệu</button>
+          </div>
+
+          <!-- GAP AUDIT & SMART FOLLOW-UP PROMPTS (UNIVERSAL DATA ANALYST) -->
+          <div id="ai-gap-audit-box"
+            style="display:none; margin:0.85rem 0 1rem 0; padding:1rem 1.15rem; background:#f8fafc; border:1px solid #cbd5e1; border-radius:8px;">
+            <div
+              style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem; flex-wrap:wrap; gap:0.5rem;">
+              <div
+                style="font-weight:800; font-size:0.9rem; color:#0f172a; display:flex; align-items:center; gap:0.4rem;">
+                <span>🛡️ Kiểm toán chất lượng dữ liệu &amp; Ghi chú thiếu sót (Gap Audit)</span>
+              </div>
+              <span id="ai-file-status-badge" class="deal-tag ready" style="font-size:0.75rem;">DAY_DU</span>
+            </div>
+            <div id="ai-gap-audit-content" style="font-size:0.83rem; color:#334155; line-height:1.55;"></div>
+
+            <div id="ai-followup-prompts-wrap"
+              style="margin-top:0.75rem; border-top:1px dashed #cbd5e1; padding-top:0.65rem;">
+              <div style="font-weight:700; font-size:0.8rem; color:#1e293b; margin-bottom:0.4rem;">
+                💡 Gợi ý câu hỏi phân tích &amp; hành động tiếp theo (Smart Follow-up Prompts):
+              </div>
+              <div id="ai-followup-prompts-list" style="display:flex; flex-direction:column; gap:0.4rem;"></div>
+            </div>
+          </div>
+
+          <div class="modern-table-container" style="max-height:360px; overflow-y:auto;">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th style="width:4%;">#</th>
+                  <th style="width:16%;">KHÁCH HÀNG</th>
+                  <th style="width:11%;">NVKD</th>
+                  <th style="width:19%;">DANH MỤC SP</th>
+                  <th style="width:5%; text-align:center;">SL</th>
+                  <th style="width:12%;">NGÂN SÁCH</th>
+                  <th style="width:9%;">THỜI HẠN</th>
+                  <th style="width:5%; text-align:center;">CK %</th>
+                  <th style="width:10%; text-align:center;">TRẠNG THÁI</th>
+                  <th style="width:13%;">KIỂM TOÁN THIẾU</th>
+                  <th style="width:6%; text-align:center;">JSON</th>
+                </tr>
+              </thead>
+              <tbody id="imported-rows-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- VIEW 3: CRM TRACKING TABLE -->
+    <section class="dashboard-content-section is-view-hidden" id="tracking-section">
+      <div class="dashboard-card-wrap reveal-up" data-reveal>
+        <div class="section-title-header">
+          <div>
+            <h2>Danh sách CRM</h2>
+          </div>
+          <span class="badge-counter-pill" id="tracking-total-badge">0 hồ sơ</span>
+        </div>
+
+        <div class="dashboard-toolbar">
+          <div class="filter-pills-bar" role="tablist">
+            <button class="f-pill active" type="button" data-filter="all" onclick="filterDeals('all')">Tất cả <span
+                class="pill-count" id="count-all">0</span></button>
+            <button class="f-pill" type="button" data-filter="ready" onclick="filterDeals('ready')">Đủ ĐK <span
+                class="pill-count" id="count-ready">0</span></button>
+            <button class="f-pill" type="button" data-filter="pending" onclick="filterDeals('pending')">Chờ duyệt <span
+                class="pill-count" id="count-pending">0</span></button>
+            <button class="f-pill" type="button" data-filter="clarify" onclick="filterDeals('clarify')">Cần bổ sung
+              <span class="pill-count" id="count-clarify">0</span></button>
+          </div>
+
+          <div class="search-box-wrap">
+            <svg class="search-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              stroke-width="2.2">
+              <circle cx="11" cy="11" r="8"></circle>
+              <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+            </svg>
+            <input type="text" id="deal-search-input" class="search-input" placeholder="Tìm nhanh..."
+              oninput="handleSearchDeals(this.value)">
+            <button type="button" id="clear-search-btn" class="search-clear-btn" onclick="clearSearchDeals()">✕</button>
+          </div>
+        </div>
+
+        <div class="modern-table-container">
+          <table class="modern-table">
+            <thead>
+              <tr>
+                <th>MÃ</th>
+                <th>KHÁCH HÀNG</th>
+                <th>NVKD</th>
+                <th>HẠNG MỤC</th>
+                <th>GIÁ TRỊ</th>
+                <th>CK %</th>
+                <th>TRẠNG THÁI</th>
+                <th style="text-align:center;">THAO TÁC</th>
+              </tr>
+            </thead>
+            <tbody id="deals-table-tbody"></tbody>
+          </table>
+          <div id="deals-empty-state" class="empty-state-box" style="display:none;">
+            <h4>Không có dữ liệu phù hợp</h4>
+            <button type="button" class="btn-row-action" onclick="resetDealFilters()">Xem tất cả</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  </section> <!-- /#section-app -->
+
+  <!-- FLOATING EDGE TRIGGER FOR COLLAPSIBLE SIDE UTILITY TOOLBAR -->
+  <button type="button" class="side-drawer-edge-btn" onclick="toggleUtilityDrawer()"
+    title="Mở thanh công cụ & ghi chú">Công cụ &amp; Ghi chú</button>
+
+  <!-- SLIDE-OUT RIGHT UTILITY DRAWER (Hidden until user clicks to inspect Notes / Flowchart / Log / Settings) -->
+  <div class="utility-drawer-backdrop" id="utility-drawer-backdrop" onclick="closeUtilityDrawer()"></div>
+  <aside class="utility-drawer" id="utility-drawer" aria-label="Thanh công cụ bên">
+    <div class="utility-drawer-head">
+      <strong>Công cụ &amp; Ghi chú</strong>
+      <button type="button" class="modal-close-round" onclick="closeUtilityDrawer()">✕</button>
+    </div>
+
+    <div class="utility-drawer-tabs">
+      <button type="button" class="f-pill active" data-drawer-tab="notes" onclick="switchDrawerTab('notes')">Log &amp;
+        Ghi chú</button>
+      <button type="button" class="f-pill" data-drawer-tab="map" onclick="switchDrawerTab('map')">Sơ đồ luồng</button>
+      <button type="button" class="f-pill" data-drawer-tab="tools" onclick="switchDrawerTab('tools')">Kho &amp;
+        API</button>
+    </div>
+
+    <div class="utility-drawer-body">
+      <!-- Drawer Tab 1: Execution Log & Policy Notes -->
+      <div class="drawer-pane active" id="drawer-pane-notes">
+        <details class="notes-accordion" open>
+          <summary>Ghi chú Quy tắc Quy trình Thu Thảo (Thu Thảo Company)</summary>
+          <div class="notes-accordion-body">
+            <p><strong>Bước 1 → 2 (ĐK1):</strong> Bóc tách 5 trường: Sản phẩm, Số lượng, Ngân sách, Thời hạn, Chiết
+              khấu. Thiếu bất kỳ trường nào → Dừng tính toán, gắn <em>"Cần bổ sung thông tin"</em> và tạo email hỏi KH
+              để lặp về Bước 1.</p>
+            <p><strong>Bước 1 (Tiếp nhận):</strong> Tiếp nhận yêu cầu từ khách hàng qua email, biểu mẫu hoặc file dữ
+              liệu.</p>
+            <p><strong>Bước 2 (Kiểm tra):</strong> Phân loại &amp; kiểm tra tính đầy đủ thông tin. Nếu thiếu thông tin →
+              Rẽ sang nhánh <em>"Yêu cầu KH làm rõ / bổ sung"</em> và loop quay lại Bước 1.</p>
+            <p><strong>Bước 3 (Hồ sơ):</strong> Cấp mã cơ hội, phân loại dự án và gán người phụ trách.</p>
+            <p><strong>Bước 4 (Báo giá &amp; Dự thảo):</strong> Áp đơn giá, tính chiết khấu và soạn thảo đề xuất.</p>
+            <p><strong>Bước 5 (Kết thúc):</strong> Cập nhật hồ sơ, lưu CRM và đưa vào hệ thống theo dõi.</p>
+          </div>
+        </details>
+
+        <div class="sub-panel-head-row" style="margin:0.9rem 0 0.5rem;">
+          <strong style="font-size:0.82rem;">Nhật ký thực thi (Log)</strong>
+          <span class="audit-count-pill" id="audit-count-pill">0</span>
+        </div>
+        <div class="audit-timeline" id="audit-log-list" style="max-height:none;"></div>
+      </div>
+
+      <!-- Drawer Tab 2: Live Flowchart Minimap -->
+      <div class="drawer-pane" id="drawer-pane-map">
+        <div class="sub-panel-head-row" style="margin-bottom:0.5rem;">
+          <strong style="font-size:0.82rem;">Vị trí hiện tại trên sơ đồ</strong>
+          <button type="button" class="link-btn" onclick="openFlowchartModal()">Phóng to</button>
+        </div>
+        <div id="live-minimap-svg" class="live-minimap-wrap"></div>
+      </div>
+
+      <!-- Drawer Tab 3: Catalog & API Shortcuts -->
+      <div class="drawer-pane" id="drawer-pane-tools">
+        <div style="display:flex; flex-direction:column; gap:0.65rem;">
+          <button type="button" class="btn-row-action" style="text-align:left;" onclick="openCatalogModal()">Mở Bảng Giá
+            &amp; Tồn Kho (Catalog)</button>
+          <button type="button" class="btn-row-action" style="text-align:left;" onclick="openApiModal()">Cài đặt &amp;
+            Kiểm tra Gemini API</button>
+          <button type="button" class="btn-row-action" style="text-align:left;" onclick="openFlowchartModal()">Xem Sơ đồ
+            Quy trình phóng to</button>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- MODAL 1: MASTER CATALOG -->
+  <div class="modal-overlay" id="catalog-modal" role="dialog" aria-modal="true" aria-labelledby="catalog-modal-title">
+    <div class="modal-sheet" style="max-width:920px;">
+      <div class="modal-header-bar">
+        <h3 id="catalog-modal-title">Bảng Giá • Tồn Kho • Lead-Time</h3>
+        <button class="modal-close-round" type="button" onclick="closeCatalogModal()">✕</button>
+      </div>
+      <div class="modal-scrollable-body">
+        <div class="two-col-form" style="margin-bottom:0.9rem;">
+          <div class="sub-panel-card">
+            <div class="sub-panel-title">Google Sheet</div>
+            <div style="display:flex; gap:0.5rem;">
+              <input type="url" id="gsheet-url" class="input-field" placeholder="URL Google Sheets...">
+              <button type="button" class="btn-row-action" onclick="connectGoogleSheet()">Đồng bộ</button>
+            </div>
+          </div>
+          <div id="drop-zone" class="drop-zone-box" role="button" tabindex="0"
+            onclick="document.getElementById('file-upload-input').click()">
+            <div style="font-weight:700; font-size:0.84rem;">Tải file Bảng giá (.xlsx / .csv)</div>
+            <div style="font-size:0.74rem; color:#64748b;" id="data-status-text">8 sản phẩm chuẩn Thu Thảo</div>
+            <input type="file" id="file-upload-input" style="display:none;" accept=".xlsx,.xls,.csv"
+              onchange="handleFileUpload(event)">
+          </div>
+        </div>
+        <div style="display:flex; justify-content:flex-end; margin-bottom:0.6rem;">
+          <button type="button" class="btn-row-action" onclick="resetDefaultMasterData()">Khôi phục gốc</button>
+        </div>
+        <div style="overflow-x:auto;">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>SKU</th>
+                <th>Sản phẩm</th>
+                <th>Danh mục</th>
+                <th>Đơn giá</th>
+                <th>Giá vốn</th>
+                <th style="text-align:center;">Tồn kho</th>
+                <th style="text-align:center;">Lead-time</th>
+              </tr>
+            </thead>
+            <tbody id="catalog-modal-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL 2: FLOWCHART -->
+  <div class="modal-overlay" id="flowchart-modal" role="dialog" aria-modal="true"
+    aria-labelledby="flowchart-modal-title">
+    <div class="modal-sheet" style="max-width:920px;">
+      <div class="modal-header-bar">
+        <h3 id="flowchart-modal-title">QUY TRÌNH XỬ LÝ CƠ HỘI BÁN HÀNG B2B - THU THẢO COMPANY</h3>
+        <button class="modal-close-round" type="button" onclick="closeFlowchartModal()">✕</button>
+      </div>
+      <div class="modal-scrollable-body">
+        <div id="flowchart-modal-svg" class="flowchart-full-wrap"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL 3: AI API CONFIGURATION -->
+  <div class="modal-overlay" id="api-modal" role="dialog" aria-modal="true" aria-labelledby="api-modal-title">
+    <div class="modal-sheet" style="max-width:600px;">
+      <div class="modal-header-bar">
+        <h3 id="api-modal-title">Kết nối AI API</h3>
+        <button class="modal-close-round" type="button" onclick="closeApiModal()">✕</button>
+      </div>
+      <div class="modal-scrollable-body">
+        <div class="sub-panel-card" style="margin-bottom:0.9rem;">
+          <div id="api-modal-status-detail" style="font-size:0.84rem; color:#334155;">Đang kiểm tra...</div>
+          <label class="check-card-label" style="margin-top:0.75rem;">
+            <input type="checkbox" id="toggle-live-api" checked onchange="toggleLiveApiMode(this.checked)">
+            <span>Bật gọi AI API khi phân tích (tự dự phòng nội bộ nếu mất mạng)</span>
+          </label>
+        </div>
+
+        <div class="sub-panel-card">
+          <div class="field-group">
+            <label class="field-label" for="api-key-input">API Key mới (tùy chọn)</label>
+            <input type="password" id="api-key-input" class="input-field mono-field"
+              placeholder="AQ.Ab8R... hoặc AIza...">
+          </div>
+          <div class="field-group">
+            <label class="field-label" for="api-model-select">Model</label>
+            <select id="api-model-select" class="input-field">
+              <option value="gemini-2.5-flash" selected>gemini-2.5-flash (Google AI Studio)</option>
+              <option value="gemini-3.5-flash-lite">gemini-3.5-flash-lite (Google AI Studio - Ổn định &amp; Tốc độ cao)
+              </option>
+              <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite (Google AI Studio)</option>
+              <option value="gemini-3-flash-preview">gemini-3-flash-preview</option>
+              <option value="gemini-flash-latest">gemini-flash-latest</option>
+            </select>
+          </div>
+          <div style="display:flex; gap:0.6rem; flex-wrap:wrap;">
+            <button type="button" class="btn-lime-full btn-compact" onclick="saveApiConfig()">Lưu cấu hình</button>
+            <button type="button" class="btn-row-action" onclick="testApiConnection()">Kiểm tra API</button>
+          </div>
+          <pre id="api-test-output" class="approval-slip-pre"
+            style="margin-top:0.8rem; display:none; border-color:#cbd5e1;"></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL XEM CHI TIẾT JSON BÓC TÁCH TỪ GEMINI -->
+  <div class="modal-backdrop" id="json-detail-modal" style="display:none;" role="dialog" aria-modal="true"
+    aria-labelledby="json-modal-title">
+    <div class="modal-card" style="max-width:680px; width:92%;">
+      <div class="modal-header">
+        <h3 class="modal-title" id="json-modal-title">Chi tiết JSON Bóc tách từ Gemini</h3>
+        <button type="button" class="btn-modal-close" onclick="closeJsonDetailModal()" aria-label="Đóng">✕</button>
+      </div>
+      <div class="modal-body">
+        <div style="font-size:0.78rem; color:#475569; margin-bottom:0.6rem;">
+          Kết quả JSON chuẩn hóa theo 7 trường từ Google AI Studio endpoint
+          <code>generativelanguage.googleapis.com</code>:
+        </div>
+        <pre id="json-detail-content" class="approval-slip-pre"
+          style="background:#0f172a; color:#f8fafc; max-height:420px; overflow-y:auto; padding:1rem; border-radius:8px; font-size:0.82rem; font-family:monospace;"></pre>
+      </div>
+      <div class="modal-footer" style="padding:0.75rem 1.25rem; display:flex; justify-content:flex-end;">
+        <button type="button" class="btn-lime-full btn-compact" onclick="closeJsonDetailModal()">Đóng</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL XEM BÁO CÁO KINH DOANH ĐỘNG & ĐỀ XUẤT GIẢI PHÁP (6 PHẦN) -->
+  <div class="modal-overlay" id="executive-report-modal" role="dialog" aria-modal="true"
+    aria-labelledby="exec-report-modal-title" onclick="if(event.target===this)closeExecutiveReportModal()">
+    <div class="modal-sheet" style="max-width:980px; max-height:92vh;">
+      <div class="modal-header-bar" style="background:#0f172a; color:#ffffff; border-bottom:2px solid #10b981;">
+        <h3 id="exec-report-modal-title"
+          style="color:#ffffff; font-size:1.05rem; display:flex; align-items:center; gap:0.5rem; margin:0;">
+          <span>📝 BÁO CÁO KINH DOANH &amp; ĐỀ XUẤT GIẢI PHÁP ĐỘNG (6 PHẦN) — THU THẢO COMPANY</span>
+        </h3>
+        <button type="button" class="modal-close-round" style="color:#0f172a;" onclick="closeExecutiveReportModal()"
+          aria-label="Đóng">✕</button>
+      </div>
+      <div class="modal-scrollable-body" id="modal-executive-report-content" style="padding:1.4rem;">
+        <!-- Rendered dynamically -->
+      </div>
+      <div class="modal-footer"
+        style="padding:0.75rem 1.6rem; display:flex; justify-content:space-between; align-items:center; background:#f8fafc; border-top:1px solid #e2e8f0; flex-wrap:wrap; gap:0.5rem;">
+        <div style="font-size:0.75rem; color:#64748b;">
+          Thu Thảo Company • Hệ thống Báo cáo Kinh doanh Động &amp; Kiến trúc BI 6 Phần
+        </div>
+        <div style="display:flex; gap:0.5rem;">
+          <button type="button" class="btn-row-action"
+            style="background:#2563eb; color:#ffffff; font-weight:800; border-color:#1d4ed8;"
+            onclick="exportBusinessReportDocx()">📄 Xuất file Word (.docx)</button>
+          <button type="button" class="btn-row-action" onclick="copyStep5ProseReport()">📋 Sao chép văn bản</button>
+          <button type="button" class="btn-lime-full btn-compact" onclick="closeExecutiveReportModal()">Đóng</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <button class="btn-back-to-top" id="back-to-top" type="button" onclick="scrollToTop()"
+    aria-label="Lên đầu trang">↑</button>
+  <div class="toast-stream" id="toast-stream" aria-live="polite"></div>
+
+  <script src="app.js?v=20261119_dynamic_report_docx_v105"></script>
+  <script src="app.js?v=20261119_datalens_kpi_dashboard_v108"></script>
+</body>
+
+</html>

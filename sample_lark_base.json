@@ -1,0 +1,48 @@
+{
+  "code": 0,
+  "msg": "success",
+  "data": {
+    "has_more": false,
+    "page_token": "",
+    "total": 3,
+    "items": [
+      {
+        "record_id": "rec_001_ssi",
+        "fields": {
+          "Customer_Name": "Công ty Cổ phần Chứng khoán SSI",
+          "Solution_Package": "Giải pháp bảo mật mạng Fortinet Security Fabric & Firewall",
+          "Quantity": 3,
+          "Budget_VND": "480000000",
+          "Delivery_Timeline": "20 ngày",
+          "Discount_Rate": "4.5%",
+          "Sales_Owner": "Nguyễn Hoàng Nam"
+        }
+      },
+      {
+        "record_id": "rec_002_vin",
+        "fields": {
+          "Customer_Name": "Tập đoàn Vingroup (Khối Công nghệ)",
+          "Solution_Package": "Cụm máy chủ tính toán AI Dell PowerEdge XE9680",
+          "Quantity": 2,
+          "Budget_VND": "1850000000",
+          "Delivery_Timeline": "40 ngày",
+          "Discount_Rate": "5%",
+          "Sales_Owner": "Lê Quang Vinh"
+        }
+      },
+      {
+        "record_id": "rec_003_fpt",
+        "fields": {
+          "Customer_Name": "Công ty Cổ phần Phần mềm FPT Software",
+          "Solution_Package": "Màn hình Dell UltraSharp 32 inch 4K & Phụ kiện",
+          "Quantity": 25,
+          "Budget_VND": "450000000",
+          "Delivery_Timeline": "15 ngày",
+          "Discount_Rate": "3%",
+          "Sales_Owner": "Trần Thị Thu Hà"
+        }
+      }
+    ]
+  }
+}
+
